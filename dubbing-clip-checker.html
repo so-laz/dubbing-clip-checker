@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dubbing Clip Checker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐘</text></svg>">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0e0e0e;color:#e0e0e0;font-family:-apple-system,'Segoe UI',sans-serif;overflow-x:hidden}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#333;border-radius:3px}
+select{appearance:auto}
+@media(max-width:1200px){body{font-size:13px}}
+.knp-hl{border-bottom:1px dashed #4a9eff;cursor:help}
+.knp-tip-fixed{position:fixed;background:#1a1a2e;border:1px solid #445;border-radius:8px;padding:10px 12px;font-size:11px;white-space:normal;width:300px;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,0.7);pointer-events:none}
+.dict-popup{position:fixed;background:#12162a;border:1px solid #335;border-radius:12px;padding:16px 20px;z-index:10000;box-shadow:0 12px 40px rgba(0,0,0,0.8);width:320px}
+.dict-popup .dict-word{font-size:18px;font-weight:700;color:#e0e0e0;margin-bottom:12px;font-family:-apple-system,'Segoe UI',sans-serif}
+.dict-popup .dict-btn{display:block;width:100%;padding:10px 14px;margin-bottom:6px;border-radius:8px;border:1px solid #2a3050;background:#1a2040;color:#ccc;font-size:13px;font-family:monospace;cursor:pointer;text-align:left;text-decoration:none;transition:background 0.15s}
+.dict-popup .dict-btn:hover{background:#253060;color:#fff}
+.dict-popup .dict-btn span{color:#4a9eff;font-weight:700;margin-right:8px}
+.dict-popup .dict-close{position:absolute;top:8px;right:12px;background:none;border:none;color:#555;font-size:16px;cursor:pointer}
+.dict-popup .dict-close:hover{color:#aaa}
+th.resizable{position:relative;user-select:none}
+th.resizable .resize-handle{position:absolute;right:0;top:0;width:5px;height:100%;cursor:col-resize;background:transparent}
+th.resizable .resize-handle:hover{background:#4a9eff44}
+td.cell-sel{background:rgba(74,158,255,0.15) !important;outline:1px solid #4a9eff55}
+.sel-table{user-select:none;cursor:default}
+.sel-table td{cursor:cell}
+.sel-table td.text-mode{user-select:text;cursor:text;outline:2px solid #4a9eff;background:rgba(74,158,255,0.1) !important;padding:0 !important}
+.cell-textarea{width:100%;height:100%;min-height:28px;background:rgba(74,158,255,0.08);color:#e0e0e0;border:none;outline:none;resize:none;font:inherit;padding:7px 8px;font-size:inherit;line-height:inherit;font-family:inherit}
+
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>window.onerror=function(msg,src,line,col,err){document.getElementById('root').innerHTML='<pre style="color:red;padding:20px;font-size:14px">ERROR: '+msg+'\nLine: '+line+'\n'+(err&&err.stack||'')+'</pre>'}</script>
+<script type="text/babel">
+const {useState,useCallback,useMemo,useRef,useEffect} = React;
+
+/* ── Utils ─────────────────────────────────────────── */
+function tcToFrames(tc,fps=24){if(!tc||typeof tc!=="string")return null;const p=tc.trim().replace(/;/g,":").split(":");if(p.length<4)return null;const[h,m,s,f]=p.map(x=>parseInt(x,10)||0);return h*3600*fps+m*60*fps+s*fps+f}
+function tcOverlap(a,b,c,d,t=2){if([a,b,c,d].some(v=>v==null))return false;return a<=d+t&&b>=c-t}
+const norm=(s)=>s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/['\u2019`]/g,"").replace(/\s+/g,"_");
+
+/* ── Parse PT ──────────────────────────────────────── */
+function parsePT(text){
+  const clips=[],lines=text.split(/\r?\n/);let inTL=false,track="",inC=false,expH=false;
+  // Extract session metadata
+  const meta={name:"",sampleRate:48000,fps:24,startTC:"00:00:00:00",fpsLabel:"24 Frame"};
+  for(const line of lines){
+    if(/^SESSION NAME:\t/.test(line))meta.name=line.split("\t")[1]||"";
+    if(/^SAMPLE RATE:\t/.test(line))meta.sampleRate=parseFloat(line.split("\t")[1])||48000;
+    if(/^TIMECODE FORMAT:\t/.test(line)){
+      meta.fpsLabel=line.split("\t")[1]||"24 Frame";
+      const m=meta.fpsLabel.match(/([\d.]+)/);if(m)meta.fps=parseFloat(m[1])||24;
+    }
+    if(/^SESSION START TIMECODE:\t/.test(line))meta.startTC=line.split("\t")[1]||"00:00:00:00";
+  }
+  for(const line of lines){
+    if(/T\s*R\s*A\s*C\s*K\s+L\s*I\s*S\s*T\s*I\s*N\s*G/i.test(line)){inTL=true;continue}
+    if(!inTL)continue;
+    if(/^TRACK NAME:\t/.test(line)){track=line.replace(/^TRACK NAME:\t/,"").trim();expH=true;inC=false;continue}
+    if(expH&&/CHANNEL\s.*EVENT\s.*CLIP NAME/.test(line)){expH=false;inC=true;continue}
+    if(inC&&line.trim()===""){inC=false;continue}
+    if(inC){const p=line.split("\t");if(p.length>=7){const cn=(p[2]||"").trim(),st=(p[3]||"").trim(),et=(p[4]||"").trim();if(st&&/\d{2}[;:]\d{2}[;:]\d{2}[;:]\d{2}/.test(st)){const sF=tcToFrames(st),eF=tcToFrames(et);clips.push({track,name:cn,tcIn:st,tcOut:et,framesIn:sF,framesOut:eF,duration:eF-sF})}}}
+  }
+  return{clips:clips.filter(c=>c.duration<=2880),meta};
+}
+
+/* ── Parse Excel ───────────────────────────────────── */
+function parseExcel(wb){
+  const sheet=wb.Sheets[wb.SheetNames[0]],data=XLSX.utils.sheet_to_json(sheet,{defval:""});
+  if(!data.length)return{entries:[],error:"Vacío"};
+  const keys=Object.keys(data[0]);
+  const find=(pats)=>keys.find(k=>{const n=k.toLowerCase().replace(/[\s_-]/g,"");return pats.some(p=>n.includes(p))});
+  const tcInCol=find(["intimecode","intc","tcin","timein","timecodein"])||keys.find(k=>/in/i.test(k)&&/time|tc|code/i.test(k));
+  const tcOutCol=find(["outtimecode","outtc","tcout","timeout","timecodeout"])||keys.find(k=>/out/i.test(k)&&/time|tc|code/i.test(k));
+  const srcCol=find(["source","character","personaje"]);
+  const transcCol=find(["transcription","transcripcion"]);
+  const dialogCol=find(["dialog","dialogue","parlamento","texto"]);
+  const tagCol=find(["tag","tags"]);
+  const annotCol=find(["annotation","annotations"]);
+  const onscreenCol=find(["sourceonscreen","onscreen"]);
+  if(!tcInCol||!tcOutCol)return{entries:[],error:"No TC columns. Found: "+keys.join(", ")};
+  const entries=[];let idx=0;
+  for(const row of data){
+    const tcIn=String(row[tcInCol]||"").trim(),tcOut=String(row[tcOutCol]||"").trim();
+    if(!tcIn||!/\d{2}[;:]\d{2}[;:]\d{2}[;:]\d{2}/.test(tcIn))continue;idx++;
+    entries.push({idx,source:srcCol?String(row[srcCol]||"").trim():"",transcription:transcCol?String(row[transcCol]||"").trim():"",
+      dialog:dialogCol?String(row[dialogCol]||"").trim():"",tags:tagCol?String(row[tagCol]||"").trim():"",
+      annotations:annotCol?String(row[annotCol]||"").trim():"",onscreen:onscreenCol?String(row[onscreenCol]||"").trim():"",
+      tcIn,tcOut,framesIn:tcToFrames(tcIn),framesOut:tcToFrames(tcOut)});
+  }
+  return{entries,error:null};
+}
+
+/* ── Parse KNP ─────────────────────────────────────── */
+function parseKNP(wb){
+  const sheet=wb.Sheets[wb.SheetNames[0]],data=XLSX.utils.sheet_to_json(sheet,{defval:""});
+  if(!data.length)return[];
+  const keys=Object.keys(data[0]);
+  const esCol=keys.find(k=>/^es\(Spanish.*Latam/i.test(k)&&!/notes/i.test(k));
+  const esNotesCol=keys.find(k=>/^es\(Spanish.*Latam.*notes/i.test(k));
+  return data.map(row=>({
+    term:String(row["Term"]||"").trim(),
+    type:String(row["Term Type"]||"").trim(),
+    definition:String(row["Term Definition"]||"").trim(),
+    esLatam:esCol?String(row[esCol]||"").trim():"",
+    esNotes:esNotesCol?String(row[esNotesCol]||"").trim():"",
+  })).filter(t=>t.term);
+}
+
+/* ── Match Dub↔PLDL ───────────────────────────────── */
+function matchDubToPldl(pldl,dub){
+  const map={},used=new Set();
+  // Pass 0: Exact TC IN + Source (handles projects where TCs are identical, e.g. Salish)
+  const dubByTcSrc={};
+  for(const d of dub){const k=(d.tcIn+"|"+d.source.toUpperCase()).replace(/;/g,":");if(!dubByTcSrc[k])dubByTcSrc[k]=[];dubByTcSrc[k].push(d)}
+  for(const p of pldl){
+    const k=(p.tcIn+"|"+p.source.toUpperCase()).replace(/;/g,":");
+    if(dubByTcSrc[k]){const a=dubByTcSrc[k].find(d=>!used.has(d.idx));if(a){map[p.idx]=a;used.add(a.idx)}}
+  }
+  // Pass 1: Exact English text (handles projects where TCs differ but TRANSCRIPTION=English, e.g. Crooks)
+  const dubByText={};for(const d of dub){const k=d.transcription.trim().toLowerCase();if(k){if(!dubByText[k])dubByText[k]=[];dubByText[k].push(d)}}
+  for(const p of pldl){if(map[p.idx])continue;const k=p.dialog.trim().toLowerCase();if(dubByText[k]){const a=dubByText[k].find(d=>!used.has(d.idx));if(a){map[p.idx]=a;used.add(a.idx)}}}
+  // Pass 2: TC overlap fallback (wide tolerance + same source)
+  for(const p of pldl){if(map[p.idx])continue;const m=dub.find(d=>!used.has(d.idx)&&d.source.toUpperCase()===p.source.toUpperCase()&&tcOverlap(p.framesIn,p.framesOut,d.framesIn,d.framesOut,1200));if(m){map[p.idx]=m;used.add(m.idx)}}
+  return map;
+}
+
+/* ── Source→Track ──────────────────────────────────── */
+function buildSTMap(entries,clips){
+  const tracks=[...new Set(clips.map(c=>c.track))],sources=[...new Set(entries.map(e=>e.source).filter(Boolean))],m={};
+  for(const src of sources){const sn=norm(src),sf=norm(src.split(/\s+/)[0]);const t=tracks.find(t=>{const tn=norm(t);return tn.startsWith(sn+"_")||tn===sn||tn.startsWith(sf+"_")||tn===sf});if(t)m[src]=t}
+  return m;
+}
+
+/* ── Matching ──────────────────────────────────────── */
+function matchClips(entries,clips,tol,stMap){
+  const tcm={};for(const c of clips){if(!tcm[c.track])tcm[c.track]=[];tcm[c.track].push(c)}
+  function belongs(cn,src){if(!src)return false;const sn=norm(src),sf=norm(src.split(/\s+/)[0]),nn=norm(cn);return nn.includes(sn)||nn.startsWith(sf+"_")}
+  return entries.map(e=>{
+    const tn=stMap[e.source];
+    if(tn){const cands=[...(tcm[tn]||[]),...(tcm[tn+"_REACS"]||[])];const m=cands.find(c=>tcOverlap(e.framesIn,e.framesOut,c.framesIn,c.framesOut,tol));if(m)return{...e,matched:true,matchedClip:m}}
+    const ext=clips.find(c=>{if(tn&&c.track===tn)return false;if(!belongs(c.name,e.source))return false;return tcOverlap(e.framesIn,e.framesOut,c.framesIn,c.framesOut,tol)});
+    if(ext)return{...e,matched:true,matchedClip:ext};
+    return{...e,matched:false,matchedClip:null};
+  });
+}
+
+/* ── KNP highlighter ──────────────────────────────── */
+function highlightTerms(text,knpTerms,onHover){
+  if(!knpTerms.length||!text)return text;
+  const parts=[];let remaining=text;
+  const sorted=[...knpTerms].sort((a,b)=>b.term.length-a.term.length);
+  const isLetter=(ch)=>/[a-zA-Z\u00C0-\u024F\u0400-\u04FF]/.test(ch);
+  const isWB=(str,pos)=>pos<0||pos>=str.length||!isLetter(str[pos]);
+  for(let i=0;i<remaining.length;){
+    let found=false;
+    for(const t of sorted){
+      const end=i+t.term.length;
+      if(end>remaining.length)continue;
+      const sub=remaining.substring(i,end);
+      if(sub.toLowerCase()===t.term.toLowerCase()&&isWB(remaining,i-1)&&isWB(remaining,end)){
+        if(i>0)parts.push(remaining.substring(0,i));
+        parts.push(<span key={parts.length} className="knp-hl"
+          onMouseEnter={e=>onHover({x:e.clientX,y:e.clientY,...t})}
+          onMouseMove={e=>onHover({x:e.clientX,y:e.clientY,...t})}
+          onMouseLeave={()=>onHover(null)}>{sub}</span>);
+        remaining=remaining.substring(end);
+        i=0;found=true;break;
+      }
+    }
+    if(!found)i++;
+  }
+  if(remaining)parts.push(remaining);
+  return parts.length?parts:text;
+}
+
+/* ── UI ────────────────────────────────────────────── */
+const DropZone=({label,hint,accept,onFile,fileName,icon,optional})=>{
+  const[drag,setDrag]=useState(false);
+  const h=useCallback(e=>{e.preventDefault();setDrag(false);const f=e.dataTransfer?.files?.[0]||e.target?.files?.[0];if(f)onFile(f)},[onFile]);
+  return(<div onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)} onDrop={h}
+    onClick={()=>document.getElementById("in-"+label).click()}
+    style={{border:drag?"2px solid #4a9eff":"2px dashed #3a3a3a",borderRadius:12,padding:"24px 16px",textAlign:"center",cursor:"pointer",
+      background:drag?"rgba(74,158,255,0.06)":fileName?"rgba(80,200,120,0.05)":"rgba(255,255,255,0.02)",transition:"all 0.2s",flex:1,minWidth:160}}>
+    <input id={"in-"+label} type="file" accept={accept} onChange={h} style={{display:"none"}} />
+    <div style={{fontSize:28,marginBottom:4,opacity:0.85}}>{icon}</div>
+    <div style={{fontFamily:"monospace",fontSize:11,fontWeight:700,letterSpacing:"0.05em",textTransform:"uppercase",color:fileName?"#50c878":"#c8c8c8",marginBottom:3}}>{label}</div>
+    {optional&&!fileName&&<div style={{fontSize:9,color:"#555",fontFamily:"monospace"}}>OPCIONAL</div>}
+    <div style={{fontSize:10,color:"#888",lineHeight:1.4}}>{fileName?<span style={{color:"#50c878"}}>✓ {fileName}</span>:hint}</div>
+  </div>);
+};
+const Badge=({matched,skipped})=>{const s=skipped?{bg:"#2a2a1a",c:"#888",l:"EXCLUIDO"}:matched?{bg:"#183a28",c:"#50c878",l:"GRABADO"}:{bg:"#3a1818",c:"#e85050",l:"FALTANTE"};return<span style={{display:"inline-block",padding:"2px 10px",borderRadius:4,fontSize:10,fontWeight:700,letterSpacing:"0.08em",fontFamily:"monospace",background:s.bg,color:s.c}}>{s.l}</span>};
+
+/* ── Resizable TH ──────────────────────────────────── */
+const ResizableTh=({children,style,minW=60})=>{
+  const ref=useRef(null);
+  const onMouseDown=useCallback(e=>{
+    e.preventDefault();const th=ref.current;if(!th)return;
+    const startX=e.clientX,startW=th.offsetWidth;
+    const onMove=ev=>{const w=Math.max(minW,startW+(ev.clientX-startX));th.style.width=w+"px";th.style.minWidth=w+"px"};
+    const onUp=()=>{document.removeEventListener("mousemove",onMove);document.removeEventListener("mouseup",onUp)};
+    document.addEventListener("mousemove",onMove);document.addEventListener("mouseup",onUp);
+  },[minW]);
+  return<th ref={ref} className="resizable" style={style}>{children}<div className="resize-handle" onMouseDown={onMouseDown}/></th>;
+};
+
+/* ── App ───────────────────────────────────────────── */
+function App(){
+  const[pldlFile,setPldlFile]=useState(null);const[dubFile,setDubFile]=useState(null);const[ptFile,setPtFile]=useState(null);const[knpFile,setKnpFile]=useState(null);
+  const[pldlEntries,setPldlEntries]=useState([]);const[dubEntries,setDubEntries]=useState([]);const[ptClips,setPtClips]=useState([]);const[knpTerms,setKnpTerms]=useState([]);
+  const[results,setResults]=useState(null);const[error,setError]=useState(null);const[tolerance,setTolerance]=useState(6);
+  const[filter,setFilter]=useState("all");const[sourceFilter,setSourceFilter]=useState("ALL");const[searchText,setSearchText]=useState("");
+  const[ptInfo,setPtInfo]=useState(null);const[ptMeta,setPtMeta]=useState(null);const[excludeNonDialog,setExcludeNonDialog]=useState(true);
+  const[excludeReactions,setExcludeReactions]=useState(false);
+  const[excludedSources,setExcludedSources]=useState(new Set());
+  const[showSourceExclude,setShowSourceExclude]=useState(false);
+  const[trackMapping,setTrackMapping]=useState({});const[dubMapping,setDubMapping]=useState({});
+  const[lang,setLang]=useState("english");const[copyMsg,setCopyMsg]=useState(false);
+  const[tip,setTip]=useState(null);
+  const[sel,setSel]=useState(null); // {r1,c1,r2,c2} row/col indices of selection
+  const[anchor,setAnchor]=useState(null); // {r,c} starting cell
+  const[textCell,setTextCell]=useState(null); // {r,c} cell in text-select mode (double-click)
+  const[showColConfig,setShowColConfig]=useState(false);
+  // Column config
+  const ALL_COLS=[
+    {key:"idx",label:"#",default:true},{key:"status",label:"Status",default:true},{key:"source",label:"Source",default:true},
+    {key:"tcIn",label:"TC IN",default:true},{key:"tcOut",label:"TC OUT",default:true},
+    {key:"dialog",label:"Diálogo",default:true},{key:"annotations",label:"Annotations",default:false},
+    {key:"onscreen",label:"Onscreen",default:false},{key:"tags",label:"Tags",default:false},
+    {key:"knp",label:"KNP",default:false},{key:"match",label:"Match PT",default:true},
+  ];
+  const[visibleCols,setVisibleCols]=useState(()=>{const m={};ALL_COLS.forEach(c=>m[c.key]=c.default);return m});
+  const toggleCol=(key)=>setVisibleCols(prev=>({...prev,[key]:!prev[key]}));
+
+  const loadXlsx=(file,cb)=>{const r=new FileReader();r.onload=e=>{try{cb(XLSX.read(new Uint8Array(e.target.result),{type:"array"}))}catch(err){setError("Error: "+err.message)}};r.readAsArrayBuffer(file)};
+  const handlePldl=useCallback(f=>{setPldlFile(f);setError(null);setResults(null);loadXlsx(f,wb=>{const{entries,error:err}=parseExcel(wb);if(err){setError("PLDL: "+err);return}if(!entries.length){setError("PLDL: No se encontraron entradas con timecodes válidos. Verifica que las columnas IN-TIMECODE/OUT-TIMECODE tengan formato HH:MM:SS:FF o HH:MM:SS;FF");return}setPldlEntries(entries)})},[]);
+  const handleDub=useCallback(f=>{setDubFile(f);setError(null);setResults(null);loadXlsx(f,wb=>{const{entries,error:err}=parseExcel(wb);if(err){setError("Dub Script: "+err);return}if(!entries.length){setError("Dub Script: No se encontraron entradas con timecodes válidos.");return}setDubEntries(entries)})},[]);
+  const handleKnp=useCallback(f=>{setKnpFile(f);setError(null);loadXlsx(f,wb=>{const terms=parseKNP(wb);if(!terms.length){setError("KNP: No se encontraron términos. Verifica que el archivo tenga columnas Term, Term Type, Term Definition.");return}setKnpTerms(terms);setVisibleCols(prev=>({...prev,knp:true}))})},[]);
+  const handlePt=useCallback(f=>{setPtFile(f);setError(null);setResults(null);const r=new FileReader();r.onload=e=>{try{const{clips:c,meta}=parsePT(e.target.result);setPtClips(c);setPtMeta(meta);setPtInfo({total:c.length,tracks:[...new Set(c.map(x=>x.track))]});if(!c.length)setError("Pro Tools: No se encontraron clips en TRACK LISTING. Verifica que el export incluya la sección de clips (Session Info as Text con la opción de clips activada).")}catch(err){setError("Pro Tools: "+err.message)}};r.readAsText(f,"latin1")},[]);
+
+  const SKIP=["WALLA","MAIN TITLE","GRAPHICS INSERTS","GRAPHICS","AD","FOREST BLAKK","JOY WILLIAMS","PRINCIPAL PHOTOGRAPHY"];
+  const REACTION_RE=/^\s*[\[(]?\s*(REAC|REACTION|RISA|LLANTO|GRITO|SUSPIRO|JADEO)/i;
+  
+  // All sources from PLDL for exclusion UI
+  const allPldlSources=useMemo(()=>{
+    const counts={};
+    for(const e of pldlEntries){const s=e.source;if(s)counts[s]=(counts[s]||0)+1}
+    return Object.entries(counts).sort(([,a],[,b])=>b-a);
+  },[pldlEntries]);
+
+  const toggleSourceExclude=(src)=>setExcludedSources(prev=>{const n=new Set(prev);if(n.has(src))n.delete(src);else n.add(src);return n});
+
+  const runCheck=useCallback(()=>{
+    if(!pldlEntries.length||!ptClips.length)return;
+    const stm=buildSTMap(pldlEntries,ptClips);setTrackMapping(stm);
+    // Filter non-dialog sources (WALLA, GRAPHICS, etc.) — these truly get removed
+    let ent=pldlEntries;
+    if(excludeNonDialog)ent=ent.filter(e=>{
+      const s=e.source.toUpperCase();
+      if(SKIP.some(sk=>s.includes(sk)))return false;
+      const tags=e.tags.split(",").map(t=>t.trim().toUpperCase());
+      const SKIP_TAGS=["MAIN TITLE","GRAPHICS INSERTS","INAUDIBLE","SONG"];
+      if(tags.some(tag=>SKIP_TAGS.includes(tag)))return false;
+      return true;
+    });
+    if(dubEntries.length>0)setDubMapping(matchDubToPldl(ent,dubEntries));else setDubMapping({});
+    // Match ALL remaining entries
+    const matched=matchClips(ent,ptClips,tolerance,stm);
+    // Flag excluded sources and reactions as "skipped" so they appear but don't count as missing
+    const results=matched.map(r=>{
+      const isExcludedSrc=excludedSources.has(r.source);
+      const isReaction=excludeReactions&&REACTION_RE.test(r.dialog);
+      return{...r,skipped:isExcludedSrc||isReaction};
+    });
+    setResults(results);setFilter("all");setSourceFilter("ALL");
+  },[pldlEntries,dubEntries,ptClips,tolerance,excludeNonDialog,excludeReactions,excludedSources]);
+
+  const hasDub=dubEntries.length>0,hasKnp=knpTerms.length>0;
+  const sources=useMemo(()=>results?["ALL",...[...new Set(results.map(r=>r.source).filter(Boolean))].sort()]:[],[results]);
+  const stats=useMemo(()=>{if(!results)return null;const t=results.length;const found=results.filter(r=>r.matched||r.skipped).length;const missing=results.filter(r=>!r.matched&&!r.skipped).length;const skipped=results.filter(r=>r.skipped).length;return{total:t,found:results.filter(r=>r.matched).length,missing,skipped,pct:t>0?Math.round((t-missing)/t*100):0}},[results]);
+  const filtered=useMemo(()=>{
+    if(!results)return[];let l=results;
+    if(filter==="missing")l=l.filter(r=>!r.matched&&!r.skipped);
+    if(filter==="found")l=l.filter(r=>r.matched);
+    if(filter==="skipped")l=l.filter(r=>r.skipped);
+    if(sourceFilter!=="ALL")l=l.filter(r=>r.source===sourceFilter);
+    if(searchText.trim()){const q=searchText.toLowerCase();l=l.filter(r=>{const d=dubMapping[r.idx];return r.dialog.toLowerCase().includes(q)||r.source.toLowerCase().includes(q)||r.tcIn.includes(q)||r.transcription.toLowerCase().includes(q)||(d&&d.dialog.toLowerCase().includes(q))})}
+    return l;
+  },[results,filter,sourceFilter,searchText,dubMapping]);
+
+  const getDialogText=(row)=>{const d=dubMapping[row.idx];if(lang==="original")return row.transcription||row.dialog;if(lang==="spanish")return d?d.dialog:"—";return row.dialog};
+  const getDialogContent=(row)=>{const text=getDialogText(row);if(hasKnp&&typeof text==="string")return highlightTerms(text,knpTerms,setTip);return text};
+
+  // Find KNP terms matching this row
+  const getKnpMatches=(row)=>{
+    if(!hasKnp)return[];
+    const text=(row.dialog+" "+row.transcription+(dubMapping[row.idx]?.dialog||""));
+    const isLetter=(ch)=>/[a-zA-Z\u00C0-\u024F\u0400-\u04FF]/.test(ch);
+    return knpTerms.filter(t=>{
+      const tl=t.term.toLowerCase();const txt=text.toLowerCase();
+      let pos=txt.indexOf(tl);
+      while(pos!==-1){
+        const before=pos===0||!isLetter(txt[pos-1]);
+        const after=pos+tl.length>=txt.length||!isLetter(txt[pos+tl.length]);
+        if(before&&after)return true;
+        pos=txt.indexOf(tl,pos+1);
+      }
+      return false;
+    });
+  };
+
+  const exportTSV=useCallback(()=>{
+    if(!results)return;const missing=results.filter(r=>!r.matched&&!r.skipped);if(!missing.length)return;
+    const cols=["#","Source","TC IN","TC OUT","English"];if(hasDub)cols.push("Español");
+    const rows=missing.map(m=>{const d=dubMapping[m.idx];const r=[m.idx,m.source,m.tcIn,m.tcOut,m.dialog.replace(/\t/g," ")];if(hasDub)r.push(d?d.dialog.replace(/\t/g," "):"");return r.join("\t")});
+    const tsv=[cols.join("\t"),...rows].join("\n");
+    const blob=new Blob(["\uFEFF"+tsv],{type:"text/tab-separated-values;charset=utf-8"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download="faltantes.tsv";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  },[results,dubMapping,hasDub]);
+
+  // Cell selection logic
+  const visCols=useMemo(()=>ALL_COLS.filter(c=>visibleCols[c.key]).map(c=>c.key),[visibleCols]);
+  const isSel=useCallback((r,c)=>{
+    if(!sel)return false;
+    const r1=Math.min(sel.r1,sel.r2),r2=Math.max(sel.r1,sel.r2);
+    const c1=Math.min(sel.c1,sel.c2),c2=Math.max(sel.c1,sel.c2);
+    return r>=r1&&r<=r2&&c>=c1&&c<=c2;
+  },[sel]);
+  const onCellDown=useCallback((r,c,e)=>{
+    setTextCell(null);
+    if(e.shiftKey&&anchor){setSel({r1:anchor.r,c1:anchor.c,r2:r,c2:c})}
+    else{setAnchor({r,c});setSel({r1:r,c1:c,r2:r,c2:c})}
+  },[anchor]);
+  const onCellEnter=useCallback((r,c,e)=>{
+    if(e.buttons===1&&anchor&&!textCell)setSel(prev=>prev?{...prev,r2:r,c2:c}:null);
+  },[anchor,textCell]);
+  const getCellText=useCallback((row,colKey)=>{
+    const d=dubMapping[row.idx];
+    switch(colKey){
+      case"idx":return String(row.idx);case"status":return row.skipped?"EXCLUIDO":row.matched?"GRABADO":"FALTANTE";
+      case"source":return row.source;case"tcIn":return row.tcIn;case"tcOut":return row.tcOut;
+      case"dialog":return getDialogText(row);case"annotations":return row.annotations||"";
+      case"onscreen":return row.onscreen||"";case"tags":return row.tags||"";
+      case"knp":return(visibleCols.knp?getKnpMatches(row):[]).map(t=>t.esLatam||t.term).join(", ");
+      case"match":return row.matchedClip?row.matchedClip.name+" ["+row.matchedClip.track+"]":"NO ENCONTRADO";
+      default:return"";
+    }
+  },[dubMapping,lang,visibleCols,knpTerms]);
+
+  // Dictionary popup state
+  const[dictPopup,setDictPopup]=useState(null); // {word,x,y}
+
+  // Keyboard handler: Ctrl+C, Cmd+L, Cmd+D, arrows, Enter, Escape
+  useEffect(()=>{
+    const langs=["original","english",...(hasDub?["spanish"]:[])];
+    const handler=e=>{
+      // Cmd+L: cycle language (works everywhere)
+      if((e.ctrlKey||e.metaKey)&&e.key==="l"){
+        e.preventDefault();
+        setLang(prev=>{const i=langs.indexOf(prev);return langs[(i+1)%langs.length]});
+        return;
+      }
+      // Escape closes dict popup first
+      if(e.key==="Escape"&&dictPopup){e.preventDefault();setDictPopup(null);return}
+      // Cmd+D: dictionary lookup
+      if((e.ctrlKey||e.metaKey)&&e.key==="d"){
+        e.preventDefault();
+        let word="";
+        if(textCell){
+          // Get selected text from textarea
+          const ta=document.querySelector(".cell-textarea");
+          if(ta)word=ta.value.substring(ta.selectionStart,ta.selectionEnd).trim();
+          if(!word)word=ta?ta.value.trim():"";
+        }else if(sel){
+          // Get dialog text of selected row
+          const r=Math.min(sel.r1,sel.r2);
+          if(r<filtered.length){
+            const row=filtered[r];
+            word=getDialogText(row);
+          }
+        }
+        // Clean: take first word if multiple, or selected text
+        word=word.replace(/[.,;:!?¿¡()\[\]{}"'\/]/g,"").trim();
+        if(word.includes(" ")){
+          // If it's a selection, use as-is; if whole cell, prompt won't work — take first meaningful word
+          const ws=window.getSelection();
+          if(ws&&ws.toString().trim())word=ws.toString().trim().replace(/[.,;:!?¿¡()\[\]{}"'\/]/g,"");
+        }
+        if(word)setDictPopup({word,x:window.innerWidth/2-150,y:window.innerHeight/2-100});
+        return;
+      }
+      // In text mode, only Escape exits
+      if(textCell){
+        if(e.key==="Escape"){e.preventDefault();setTextCell(null);if(anchor)setSel({r1:anchor.r,c1:anchor.c,r2:anchor.r,c2:anchor.c})}
+        return;
+      }
+      // Ctrl/Cmd+C to copy
+      if((e.ctrlKey||e.metaKey)&&e.key==="c"&&sel&&filtered.length){
+        e.preventDefault();
+        const r1=Math.min(sel.r1,sel.r2),r2=Math.max(sel.r1,sel.r2);
+        const c1=Math.min(sel.c1,sel.c2),c2=Math.max(sel.c1,sel.c2);
+        const cols=visCols.slice(c1,c2+1);
+        const lines=[];
+        for(let r=r1;r<=r2&&r<filtered.length;r++){
+          lines.push(cols.map(ck=>getCellText(filtered[r],ck).replace(/\t/g," ")).join("\t"));
+        }
+        const txt=lines.join("\n");
+        // Fallback: hidden textarea for file:// protocol
+        const ta=document.createElement("textarea");
+        ta.value=txt;ta.style.cssText="position:fixed;left:-9999px";
+        document.body.appendChild(ta);ta.select();
+        document.execCommand("copy");document.body.removeChild(ta);
+        // Also try modern API
+        try{navigator.clipboard.writeText(txt)}catch(ex){}
+        return;
+      }
+      if(!sel||!filtered.length)return;
+      const maxR=filtered.length-1,maxC=visCols.length-1;
+      let{r2:r,c2:c}=sel;
+      // Arrow keys
+      if(e.key==="ArrowDown"){e.preventDefault();r=Math.min(r+1,maxR)}
+      else if(e.key==="ArrowUp"){e.preventDefault();r=Math.max(r-1,0)}
+      else if(e.key==="ArrowRight"){e.preventDefault();c=Math.min(c+1,maxC)}
+      else if(e.key==="ArrowLeft"){e.preventDefault();c=Math.max(c-1,0)}
+      else if(e.key==="Tab"){e.preventDefault();if(e.shiftKey)c=Math.max(c-1,0);else c=Math.min(c+1,maxC)}
+      else if(e.key==="Enter"){e.preventDefault();setTextCell({r,c});setSel(null);return}
+      else if(e.key==="Escape"){e.preventDefault();setSel(null);return}
+      else return;
+      if(e.shiftKey&&(e.key.startsWith("Arrow"))){setSel(prev=>({...prev,r2:r,c2:c}))}
+      else{setAnchor({r,c});setSel({r1:r,c1:c,r2:r,c2:c})}
+      // Scroll into view
+      const rowEl=document.querySelector('.sel-table tbody tr:nth-child('+(r+1)+')');
+      if(rowEl)rowEl.scrollIntoView({block:"nearest"});
+    };
+    document.addEventListener("keydown",handler);return()=>document.removeEventListener("keydown",handler);
+  },[sel,filtered,visCols,getCellText,textCell,anchor,hasDub,lang,dictPopup]);
+
+  // Auto-select cell text on Enter or double-click
+  // Now handled by textarea focus
+
+  // Wrapper: renders a textarea for the active text cell
+  const cellWrap=(ri,ci,plainText,richContent)=>{
+    if(textCell&&textCell.r===ri&&textCell.c===ci){
+      return <textarea className="cell-textarea" readOnly defaultValue={plainText}
+        ref={el=>{if(el){el.focus();el.select()}}}
+        onKeyDown={e=>{
+          if(e.key==="Escape"){e.preventDefault();e.stopPropagation();setTextCell(null);setAnchor({r:ri,c:ci});setSel({r1:ri,c1:ci,r2:ri,c2:ci})}
+        }}
+      />;
+    }
+    return richContent;
+  };
+
+  const mono="monospace",sans="-apple-system,'Segoe UI',sans-serif",canRun=pldlEntries.length>0&&ptClips.length>0;
+  const thStyle={padding:"10px 8px",textAlign:"left",fontSize:10,fontWeight:700,textTransform:"uppercase",color:"#666",whiteSpace:"nowrap",background:"#161616"};
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0e0e0e",color:"#e0e0e0",fontFamily:sans,padding:"20px clamp(12px, 2vw, 30px) 40px"}} onClick={e=>{if(!e.target.closest('.sel-table')){setSel(null);setTextCell(null)}if(!e.target.closest('.dict-popup'))setDictPopup(null)}}>
+      <div style={{maxWidth:1860,margin:"0 auto"}}>
+        {/* Header */}
+        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:4}}>
+          <div style={{width:40,height:40,borderRadius:8,background:"linear-gradient(135deg,#4a9eff,#2563eb)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20}}>🐘</div>
+          <div>
+            <h1 style={{fontSize:22,fontWeight:700,color:"#f5f5f5"}}>Dubbing Clip Checker</h1>
+            <p style={{fontSize:12,color:"#888",fontFamily:mono}}>SCRIPT vs PRO TOOLS · COTEJO POR TIMECODE</p>
+          </div>
+        </div>
+
+        {/* Upload */}
+        <div style={{display:"flex",gap:10,marginTop:24,flexWrap:"wrap"}}>
+          <DropZone label="PLDL (.xlsx)" hint="Dialog List original" accept=".xlsx,.xls" onFile={handlePldl} fileName={pldlFile?.name} icon="📄" />
+          <DropZone label="Dub Script (.xlsx)" hint="Guion traducido" accept=".xlsx,.xls" onFile={handleDub} fileName={dubFile?.name} icon="🌐" optional />
+          <DropZone label="KNP (.xlsx)" hint="Key Names & Phrases" accept=".xlsx,.xls" onFile={handleKnp} fileName={knpFile?.name} icon="📖" optional />
+          <DropZone label="Pro Tools (.txt)" hint="Session Info as Text" accept=".txt,.text" onFile={handlePt} fileName={ptFile?.name} icon="🎛️" />
+        </div>
+
+        {/* Config */}
+        <div style={{display:"flex",alignItems:"center",gap:14,marginTop:18,flexWrap:"wrap"}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,fontSize:12,color:"#aaa"}}>
+            <span style={{fontFamily:mono,fontWeight:600,fontSize:10,textTransform:"uppercase"}}>Tol:</span>
+            <input type="range" min={0} max={24} value={tolerance} onChange={e=>setTolerance(+e.target.value)} style={{width:60,accentColor:"#4a9eff"}} />
+            <span style={{fontFamily:mono,fontSize:11,color:"#4a9eff",minWidth:46}}>±{tolerance}fr</span>
+          </div>
+          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#aaa",cursor:"pointer"}}>
+            <input type="checkbox" checked={excludeNonDialog} onChange={e=>setExcludeNonDialog(e.target.checked)} style={{accentColor:"#4a9eff"}} />
+            <span style={{fontFamily:mono,fontSize:10,textTransform:"uppercase"}}>Excluir no-diálogo</span>
+          </label>
+          <label style={{display:"flex",alignItems:"center",gap:5,fontSize:11,color:"#aaa",cursor:"pointer"}}>
+            <input type="checkbox" checked={excludeReactions} onChange={e=>setExcludeReactions(e.target.checked)} style={{accentColor:"#4a9eff"}} />
+            <span style={{fontFamily:mono,fontSize:10,textTransform:"uppercase"}}>Excluir reacciones</span>
+          </label>
+          {allPldlSources.length>0&&(
+            <button onClick={()=>setShowSourceExclude(!showSourceExclude)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #333",background:showSourceExclude?"#1a2a4a":"transparent",color:showSourceExclude?"#4a9eff":"#888",fontSize:10,fontFamily:mono,cursor:"pointer",fontWeight:600}}>
+              👤 Personajes {excludedSources.size>0?"("+excludedSources.size+" excl.)":""}
+            </button>
+          )}
+          {results&&(
+            <div style={{display:"flex",alignItems:"center",gap:4}}>
+              <span style={{fontFamily:mono,fontWeight:600,fontSize:10,textTransform:"uppercase",color:"#888"}}>Idioma:</span>
+              <div style={{display:"flex",gap:2,background:"#141414",borderRadius:6,padding:2}}>
+                {[{key:"original",label:"Original"},{key:"english",label:"ENG"},...(hasDub?[{key:"spanish",label:"ESP"}]:[])].map(t=>
+                  <button key={t.key} onClick={()=>setLang(t.key)} style={{padding:"3px 8px",borderRadius:4,border:"none",fontSize:10,fontWeight:600,fontFamily:mono,cursor:"pointer",background:lang===t.key?"#1a2a4a":"transparent",color:lang===t.key?"#4a9eff":"#666"}}>{t.label}</button>
+                )}
+              </div>
+            </div>
+          )}
+          {results&&(
+            <button onClick={()=>setShowColConfig(!showColConfig)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #333",background:showColConfig?"#1a2a4a":"transparent",color:showColConfig?"#4a9eff":"#888",fontSize:10,fontFamily:mono,cursor:"pointer",fontWeight:600}}>
+              ⚙ Columnas
+            </button>
+          )}
+          <button onClick={runCheck} disabled={!canRun} style={{
+            marginLeft:"auto",padding:"9px 22px",borderRadius:8,border:"none",
+            background:canRun?"linear-gradient(135deg,#4a9eff,#2563eb)":"#2a2a2a",
+            color:canRun?"#fff":"#666",fontWeight:700,fontSize:13,fontFamily:mono,cursor:canRun?"pointer":"default",textTransform:"uppercase",
+          }}>▶ Cotejar</button>
+        </div>
+
+        {/* Column config panel */}
+        {showColConfig&&results&&(
+          <div style={{marginTop:10,padding:"10px 14px",background:"#141414",border:"1px solid #222",borderRadius:8,display:"flex",gap:12,flexWrap:"wrap"}}>
+            {ALL_COLS.map(col=>(
+              <label key={col.key} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:visibleCols[col.key]?"#ccc":"#555",cursor:"pointer",fontFamily:mono}}>
+                <input type="checkbox" checked={visibleCols[col.key]} onChange={()=>toggleCol(col.key)} style={{accentColor:"#4a9eff"}} />
+                {col.label}
+              </label>
+            ))}
+          </div>
+        )}
+
+        {/* Source exclusion panel */}
+        {showSourceExclude&&allPldlSources.length>0&&(
+          <div style={{marginTop:10,padding:"12px 14px",background:"#141414",border:"1px solid #222",borderRadius:8}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+              <span style={{fontFamily:mono,fontSize:10,fontWeight:700,textTransform:"uppercase",color:"#888"}}>
+                Personajes a incluir/excluir del cotejo
+              </span>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>setExcludedSources(new Set())} style={{padding:"2px 8px",borderRadius:4,border:"1px solid #333",background:"transparent",color:"#88cc88",fontSize:10,fontFamily:mono,cursor:"pointer"}}>Incluir todos</button>
+                <button onClick={()=>setExcludedSources(new Set(allPldlSources.map(([s])=>s)))} style={{padding:"2px 8px",borderRadius:4,border:"1px solid #333",background:"transparent",color:"#e85050",fontSize:10,fontFamily:mono,cursor:"pointer"}}>Excluir todos</button>
+              </div>
+            </div>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap",maxHeight:180,overflowY:"auto"}}>
+              {allPldlSources.map(([src,count])=>{
+                const excluded=excludedSources.has(src);
+                return(
+                  <label key={src} style={{display:"flex",alignItems:"center",gap:4,fontSize:11,cursor:"pointer",fontFamily:mono,
+                    color:excluded?"#555":"#ccc",padding:"3px 8px",borderRadius:5,
+                    background:excluded?"rgba(232,80,80,0.08)":"rgba(80,200,120,0.06)",
+                    border:excluded?"1px solid #3a2020":"1px solid #1a3a1a"}}>
+                    <input type="checkbox" checked={!excluded} onChange={()=>toggleSourceExclude(src)} style={{accentColor:"#4a9eff"}} />
+                    {src} <span style={{color:"#666",fontSize:9}}>({count})</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Status chips */}
+        {(pldlEntries.length>0||ptClips.length>0)&&!results&&(
+          <div style={{display:"flex",gap:8,marginTop:14,flexWrap:"wrap"}}>
+            {pldlEntries.length>0&&<div style={{padding:"4px 10px",borderRadius:6,background:"#1a1a2e",fontSize:11,fontFamily:mono,color:"#8888cc"}}>PLDL: {pldlEntries.length}</div>}
+            {dubEntries.length>0&&<div style={{padding:"4px 10px",borderRadius:6,background:"#1a2e2e",fontSize:11,fontFamily:mono,color:"#88ccbb"}}>Dub: {dubEntries.length}</div>}
+            {hasKnp&&<div style={{padding:"4px 10px",borderRadius:6,background:"#1a1a2e",fontSize:11,fontFamily:mono,color:"#9999dd"}}>KNP: {knpTerms.length} términos</div>}
+            {ptInfo&&<div style={{padding:"4px 10px",borderRadius:6,background:"#1a2e1a",fontSize:11,fontFamily:mono,color:"#88cc88"}}>PT: {ptInfo.total} clips · {ptInfo.tracks.length} tracks</div>}
+          </div>
+        )}
+
+        {/* Track mapping */}
+        {Object.keys(trackMapping).length>0&&results&&(
+          <details style={{marginTop:10,fontSize:11,fontFamily:mono,color:"#666"}}>
+            <summary style={{cursor:"pointer",color:"#888",marginBottom:4}}>Mapeo SOURCE→TRACK ({Object.keys(trackMapping).length})</summary>
+            <div style={{background:"#141414",borderRadius:8,padding:10,maxHeight:180,overflowY:"auto"}}>
+              {Object.entries(trackMapping).sort(([a],[b])=>a.localeCompare(b)).map(([src,track])=>
+                <div key={src} style={{marginBottom:2}}><span style={{color:"#4a9eff"}}>{src}</span><span style={{color:"#555"}}> → </span><span style={{color:"#88cc88"}}>{track}</span></div>
+              )}
+            </div>
+          </details>
+        )}
+
+        {error&&<div style={{marginTop:14,padding:"12px 16px",background:"#2a1515",border:"1px solid #4a2020",borderRadius:8,fontSize:13,color:"#e88"}}>⚠️ {error}</div>}
+
+        {stats&&(<>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(130px,1fr))",gap:10,marginTop:20}}>
+            {[{label:"Total",value:stats.total,color:"#4a9eff"},{label:"Grabados",value:stats.found,color:"#50c878"},{label:"Faltantes",value:stats.missing,color:"#e85050"},{label:"Avance",value:stats.pct+"%",color:stats.pct===100?"#50c878":"#4a9eff"}].map(c=>
+              <div key={c.label} style={{background:"#161616",border:"1px solid #252525",borderRadius:10,padding:"14px 16px",textAlign:"center"}}>
+                <div style={{fontSize:26,fontWeight:700,fontFamily:mono,color:c.color}}>{c.value}</div>
+                <div style={{fontSize:9,fontWeight:600,textTransform:"uppercase",letterSpacing:"0.1em",color:"#777",marginTop:3}}>{c.label}</div>
+              </div>
+            )}
+          </div>
+
+          <div style={{marginTop:14,height:5,background:"#1a1a1a",borderRadius:3,overflow:"hidden"}}>
+            <div style={{width:stats.pct+"%",height:"100%",borderRadius:3,transition:"width 0.6s",background:stats.pct===100?"linear-gradient(90deg,#50c878,#3aa55d)":"linear-gradient(90deg,#4a9eff,#2563eb)"}} />
+          </div>
+
+          <div style={{display:"flex",gap:8,marginTop:20,flexWrap:"wrap",alignItems:"center"}}>
+            <div style={{display:"flex",gap:2,background:"#141414",borderRadius:8,padding:2}}>
+              {[{key:"all",label:"Todos "+stats.total},{key:"missing",label:"Faltantes "+stats.missing},{key:"found",label:"Grabados "+stats.found},...(stats.skipped>0?[{key:"skipped",label:"Excluidos "+stats.skipped}]:[])].map(tab=>
+                <button key={tab.key} onClick={()=>setFilter(tab.key)} style={{padding:"5px 12px",borderRadius:6,border:"none",fontSize:10,fontWeight:600,fontFamily:mono,cursor:"pointer",background:filter===tab.key?"#1a2a4a":"transparent",color:filter===tab.key?"#4a9eff":"#666"}}>{tab.label}</button>
+              )}
+            </div>
+            <select value={sourceFilter} onChange={e=>setSourceFilter(e.target.value)} style={{background:"#1a1a1a",border:"1px solid #333",color:"#e0e0e0",padding:"5px 8px",borderRadius:6,fontFamily:mono,fontSize:10}}>
+              {sources.map(s=><option key={s} value={s}>{s==="ALL"?"— Todos —":s}</option>)}
+            </select>
+            <input type="text" placeholder="Buscar..." value={searchText} onChange={e=>setSearchText(e.target.value)} style={{background:"#1a1a1a",border:"1px solid #333",color:"#e0e0e0",padding:"5px 10px",borderRadius:6,fontSize:12,flex:1,minWidth:100,outline:"none"}} />
+          </div>
+
+          <div style={{marginTop:6,fontSize:10,fontFamily:mono,color:"#555"}}>Mostrando {filtered.length} de {results.length}</div>
+
+          {/* Table */}
+          <div style={{marginTop:6,border:"1px solid #222",borderRadius:10,overflow:"hidden"}}>
+            <div style={{overflowX:"auto",maxHeight:"calc(100vh - 380px)",minHeight:200,overflowY:"auto"}}>
+              <table className="sel-table" style={{width:"100%",borderCollapse:"collapse",fontSize:12,fontFamily:mono,tableLayout:"fixed"}}>
+                <thead>
+                  <tr style={{background:"#161616",borderBottom:"1px solid #2a2a2a",position:"sticky",top:0,zIndex:1}}>
+                    {visibleCols.idx&&<ResizableTh style={{...thStyle,width:45}} minW={30}>#</ResizableTh>}
+                    {visibleCols.status&&<ResizableTh style={{...thStyle,width:90}} minW={70}>Status</ResizableTh>}
+                    {visibleCols.source&&<ResizableTh style={{...thStyle,width:140}} minW={60}>Source</ResizableTh>}
+                    {visibleCols.tcIn&&<ResizableTh style={{...thStyle,width:110}} minW={80}>TC IN</ResizableTh>}
+                    {visibleCols.tcOut&&<ResizableTh style={{...thStyle,width:110}} minW={80}>TC OUT</ResizableTh>}
+                    {visibleCols.dialog&&<ResizableTh style={{...thStyle,width:420}} minW={120}>
+                      {lang==="original"?"Diálogo (Original)":lang==="english"?"Dialogue (ENG)":"Diálogo (ESP)"}
+                    </ResizableTh>}
+                    {visibleCols.annotations&&<ResizableTh style={{...thStyle,width:200}} minW={80}>Annotations</ResizableTh>}
+                    {visibleCols.onscreen&&<ResizableTh style={{...thStyle,width:100}} minW={60}>Onscreen</ResizableTh>}
+                    {visibleCols.tags&&<ResizableTh style={{...thStyle,width:160}} minW={60}>Tags</ResizableTh>}
+                    {visibleCols.knp&&<ResizableTh style={{...thStyle,width:180}} minW={80}>KNP</ResizableTh>}
+                    {visibleCols.match&&<ResizableTh style={{...thStyle,width:280}} minW={100}>Match PT</ResizableTh>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((row,i)=>{
+                    const knpMatches=visibleCols.knp?getKnpMatches(row):[];
+                    const tdS={padding:"7px 8px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"normal",wordBreak:"break-word",verticalAlign:"top"};
+                    let ci=-1;
+                    const cp=(extraStyle)=>{ci++;const c=ci;const isText=textCell&&textCell.r===i&&textCell.c===c;return{c,props:{style:{...tdS,...extraStyle},className:(isSel(i,c)?"cell-sel":"")+(isText?" text-mode":""),"data-rc":i+"-"+c,onMouseDown:e=>{if(!isText)onCellDown(i,c,e)},onMouseEnter:e=>onCellEnter(i,c,e),onDoubleClick:()=>{setTextCell({r:i,c});setSel(null)}}}};
+                    const W=(c,plain,rich)=>cellWrap(i,c,String(plain),rich);
+                    return(
+                    <tr key={i} style={{borderBottom:"1px solid #1a1a1a",background:row.skipped?"rgba(128,128,128,0.03)":row.matched?"rgba(80,200,120,0.03)":"rgba(232,80,80,0.04)"}}>
+                      {visibleCols.idx&&(()=>{const{c,props}=cp({color:"#555",fontSize:11});return<td {...props}>{W(c,row.idx,row.idx)}</td>})()}
+                      {visibleCols.status&&(()=>{const{c,props}=cp({});return<td {...props}>{W(c,row.skipped?"EXCLUIDO":row.matched?"GRABADO":"FALTANTE",<Badge matched={row.matched} skipped={row.skipped}/>)}</td>})()}
+                      {visibleCols.source&&(()=>{const{c,props}=cp({color:"#aaa",fontFamily:sans,fontSize:12});return<td {...props}>{W(c,row.source,row.source)}</td>})()}
+                      {visibleCols.tcIn&&(()=>{const{c,props}=cp({color:"#4a9eff",fontSize:11,whiteSpace:"nowrap"});return<td {...props}>{W(c,row.tcIn,row.tcIn)}</td>})()}
+                      {visibleCols.tcOut&&(()=>{const{c,props}=cp({color:"#4a9eff",fontSize:11,whiteSpace:"nowrap"});return<td {...props}>{W(c,row.tcOut,row.tcOut)}</td>})()}
+                      {visibleCols.dialog&&(()=>{const{c,props}=cp({color:lang==="spanish"?"#88ccbb":"#888",fontFamily:sans,fontSize:12});return<td {...props}>{W(c,getDialogText(row),getDialogContent(row))}</td>})()}
+                      {visibleCols.annotations&&(()=>{const{c,props}=cp({color:"#777",fontFamily:sans,fontSize:11});return<td {...props}>{W(c,row.annotations,row.annotations)}</td>})()}
+                      {visibleCols.onscreen&&(()=>{const{c,props}=cp({color:"#777",fontSize:10});return<td {...props}>{W(c,row.onscreen,row.onscreen)}</td>})()}
+                      {visibleCols.tags&&(()=>{const{c,props}=cp({color:"#777",fontSize:10});return<td {...props}>{W(c,row.tags,row.tags)}</td>})()}
+                      {visibleCols.knp&&(()=>{const{c,props}=cp({fontSize:10,color:"#9999dd"});const knpText=knpMatches.map(t=>t.esLatam||t.term).join(", ");const knpRich=knpMatches.length>0?knpMatches.map((t,j)=><span key={j} className="knp-hl" style={{marginRight:4}} onMouseEnter={e=>{e.stopPropagation();setTip({x:e.clientX,y:e.clientY,...t})}} onMouseMove={e=>setTip({x:e.clientX,y:e.clientY,...t})} onMouseLeave={()=>setTip(null)}>{t.esLatam||t.term}</span>):"—";return<td {...props}>{W(c,knpText||"—",knpRich)}</td>})()}
+                      {visibleCols.match&&(()=>{const{c,props}=cp({color:row.matched?"#555":"#e85050",fontSize:10});const mText=row.matchedClip?row.matchedClip.name+" ["+row.matchedClip.track+"]":"NO ENCONTRADO";return<td {...props}>{W(c,mText,row.matchedClip?mText:"⚠ NO ENCONTRADO")}</td>})()}
+                    </tr>);
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Export */}
+          {stats.missing>0&&(
+            <div style={{marginTop:16,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap"}}>
+              <button onClick={exportTSV} style={{padding:"9px 20px",borderRadius:8,border:"1px solid #3a2020",background:"transparent",color:"#e85050",fontWeight:600,fontSize:12,fontFamily:mono,cursor:"pointer"}}>↓ Descargar faltantes</button>
+              <button onClick={()=>{
+                const missing=results.filter(r=>!r.matched&&!r.skipped);const cols=["#","Source","TC IN","TC OUT","English"];if(hasDub)cols.push("Español");
+                const rows=missing.map(m=>{const d=dubMapping[m.idx];const r=[m.idx,m.source,m.tcIn,m.tcOut,m.dialog.replace(/\t/g," ")];if(hasDub)r.push(d?d.dialog.replace(/\t/g," "):"");return r.join("\t")});
+                const txt=[cols.join("\t"),...rows].join("\n");
+                const ta=document.createElement("textarea");ta.value=txt;ta.style.cssText="position:fixed;left:-9999px";
+                document.body.appendChild(ta);ta.select();document.execCommand("copy");document.body.removeChild(ta);
+                try{navigator.clipboard.writeText(txt)}catch(ex){}
+                setCopyMsg(true);setTimeout(()=>setCopyMsg(false),2000);
+              }} style={{padding:"9px 20px",borderRadius:8,border:"1px solid #333",background:"transparent",color:"#aaa",fontWeight:600,fontSize:12,fontFamily:mono,cursor:"pointer"}}>📋 Copiar</button>
+              {copyMsg&&<span style={{fontSize:11,color:"#50c878"}}>✓ Copiado</span>}
+            </div>
+          )}
+        </>)}
+
+        {!results&&!error&&(
+          <div style={{marginTop:32,padding:"18px 22px",background:"#131313",border:"1px solid #1e1e1e",borderRadius:10,fontSize:13,lineHeight:1.7,color:"#777"}}>
+            <div style={{fontFamily:mono,fontSize:11,fontWeight:700,textTransform:"uppercase",color:"#999",marginBottom:8}}>Cómo funciona</div>
+            <div>
+              <strong style={{color:"#ccc"}}>1.</strong> Sube la <strong style={{color:"#ccc"}}>PLDL</strong> — Dialog List original<br/>
+              <strong style={{color:"#ccc"}}>2.</strong> <span style={{color:"#666"}}>(Opcional)</span> <strong style={{color:"#ccc"}}>Dub Script</strong> — Guion traducido<br/>
+              <strong style={{color:"#ccc"}}>3.</strong> <span style={{color:"#666"}}>(Opcional)</span> <strong style={{color:"#ccc"}}>KNP</strong> — Key Names & Phrases para validar terminología<br/>
+              <strong style={{color:"#ccc"}}>4.</strong> Exporta tu sesión: <span style={{fontFamily:mono,fontSize:11,color:"#4a9eff"}}>File → Export → Session Info as Text</span><br/>
+              <strong style={{color:"#ccc"}}>5.</strong> Ajusta tolerancia y dale <strong style={{color:"#4a9eff"}}>Cotejar</strong><br/><br/>
+              <span style={{color:"#666",fontSize:12}}>
+                <strong style={{color:"#888"}}>Atajos:</strong> Flechas = navegar · Enter = modo texto · Cmd+L = cambiar idioma · Cmd+D = diccionarios · Cmd+C = copiar · Escape = salir
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* Floating KNP tooltip */}
+        {tip&&(
+          <div className="knp-tip-fixed" style={{left:Math.min(tip.x+12,window.innerWidth-320),top:tip.y>300?tip.y-140:tip.y+20}}>
+            <div style={{fontWeight:700,color:"#4a9eff",marginBottom:4}}>{tip.term} <span style={{color:"#888",fontWeight:400}}>({tip.type})</span></div>
+            {tip.definition&&<div style={{color:"#aaa",marginBottom:4}}>{tip.definition.substring(0,180)}</div>}
+            {tip.esLatam&&<div style={{color:"#88ccbb"}}>ES-LATAM: {tip.esLatam}</div>}
+            {tip.esNotes&&<div style={{color:"#999",fontStyle:"italic",marginTop:2}}>{tip.esNotes}</div>}
+          </div>
+        )}
+
+        {/* Dictionary popup */}
+        {dictPopup&&(
+          <div className="dict-popup" style={{left:dictPopup.x,top:dictPopup.y}} onClick={e=>e.stopPropagation()}>
+            <button className="dict-close" onClick={()=>setDictPopup(null)}>✕</button>
+            <div className="dict-word">📖 {dictPopup.word}</div>
+            <a className="dict-btn" href={"https://dle.rae.es/"+encodeURIComponent(dictPopup.word)} target="_blank" rel="noopener noreferrer">
+              <span>DLE</span> Diccionario de la Lengua Española — RAE
+            </a>
+            <a className="dict-btn" href={"https://dem.colmex.mx/Ver/"+encodeURIComponent(dictPopup.word)} target="_blank" rel="noopener noreferrer">
+              <span>DEM</span> Diccionario del Español de México
+            </a>
+            <a className="dict-btn" href={"https://www.asale.org/damer/"+encodeURIComponent(dictPopup.word)} target="_blank" rel="noopener noreferrer">
+              <span>DA</span> Diccionario de Americanismos — ASALE
+            </a>
+            <div style={{marginTop:10,fontSize:10,color:"#555",fontFamily:"monospace",textAlign:"center"}}>
+              Cmd+D para buscar · Escape para cerrar
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
