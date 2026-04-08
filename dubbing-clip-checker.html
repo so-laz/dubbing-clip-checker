@@ -9,6 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0e0e0e;color:#e0e0e0;font-family:-apple-system,'Segoe UI',sans-serif;overflow-x:hidden}
@@ -44,7 +45,7 @@ const {useState,useCallback,useMemo,useRef,useEffect} = React;
 /* ── Utils ─────────────────────────────────────────── */
 function tcToFrames(tc,fps=24){if(!tc||typeof tc!=="string")return null;const p=tc.trim().replace(/;/g,":").split(":");if(p.length<4)return null;const[h,m,s,f]=p.map(x=>parseInt(x,10)||0);return h*3600*fps+m*60*fps+s*fps+f}
 function tcOverlap(a,b,c,d,t=2){if([a,b,c,d].some(v=>v==null))return false;return a<=d+t&&b>=c-t}
-const norm=(s)=>s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/['\u2019`]/g,"").replace(/\s+/g,"_");
+const norm=(s)=>s.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toUpperCase().replace(/['\u2019`]/g,"").replace(/[\s\-]+/g,"_");
 
 /* ── Parse PT ──────────────────────────────────────── */
 function parsePT(text){
@@ -68,34 +69,111 @@ function parsePT(text){
     if(inC&&line.trim()===""){inC=false;continue}
     if(inC){const p=line.split("\t");if(p.length>=7){const cn=(p[2]||"").trim(),st=(p[3]||"").trim(),et=(p[4]||"").trim();if(st&&/\d{2}[;:]\d{2}[;:]\d{2}[;:]\d{2}/.test(st)){const sF=tcToFrames(st),eF=tcToFrames(et);clips.push({track,name:cn,tcIn:st,tcOut:et,framesIn:sF,framesOut:eF,duration:eF-sF})}}}
   }
-  return{clips:clips.filter(c=>c.duration<=2880),meta};
+  return{clips:clips.filter(c=>c.duration<=2880),meta:{...meta,earliestFrame:clips.length?Math.min(...clips.map(c=>c.framesIn)):0}};
 }
 
 /* ── Parse Excel ───────────────────────────────────── */
 function parseExcel(wb){
-  const sheet=wb.Sheets[wb.SheetNames[0]],data=XLSX.utils.sheet_to_json(sheet,{defval:""});
-  if(!data.length)return{entries:[],error:"Vacío"};
-  const keys=Object.keys(data[0]);
-  const find=(pats)=>keys.find(k=>{const n=k.toLowerCase().replace(/[\s_-]/g,"");return pats.some(p=>n.includes(p))});
-  const tcInCol=find(["intimecode","intc","tcin","timein","timecodein"])||keys.find(k=>/in/i.test(k)&&/time|tc|code/i.test(k));
-  const tcOutCol=find(["outtimecode","outtc","tcout","timeout","timecodeout"])||keys.find(k=>/out/i.test(k)&&/time|tc|code/i.test(k));
-  const srcCol=find(["source","character","personaje"]);
-  const transcCol=find(["transcription","transcripcion"]);
-  const dialogCol=find(["dialog","dialogue","parlamento","texto"]);
-  const tagCol=find(["tag","tags"]);
-  const annotCol=find(["annotation","annotations"]);
-  const onscreenCol=find(["sourceonscreen","onscreen"]);
-  if(!tcInCol||!tcOutCol)return{entries:[],error:"No TC columns. Found: "+keys.join(", ")};
+  // Auto-detect sheet: prefer "Dialogue List", else first sheet
+  const sheetName=wb.SheetNames.find(s=>/dialogue\s*list/i.test(s))||wb.SheetNames[0];
+  const sheet=wb.Sheets[sheetName];
+  const allData=XLSX.utils.sheet_to_json(sheet,{defval:"",header:1});
+  if(!allData.length)return{entries:[],error:"Vacío"};
+  // Find header row: look for a row that has TC/TIMECODE columns
+  let headerIdx=0;
+  for(let i=0;i<Math.min(10,allData.length);i++){
+    const row=allData[i];
+    if(row.some(c=>typeof c==="string"&&/(timecode|tc\s*in|in.?timecode)/i.test(c))){headerIdx=i;break}
+  }
+  const headers=allData[headerIdx].map(h=>String(h||"").trim());
+  const find=(pats)=>headers.findIndex(h=>{const n=h.toLowerCase().replace(/[\s_\-:]+/g,"");return pats.some(p=>n.includes(p))});
+  let tcInI=find(["timecodein","intimecode","tcin","timein"]);
+  let tcOutI=find(["timecodeout","outtimecode","tcout","timeout"]);
+  let srcI=find(["charactersource","source","character","personaje"]);
+  let transcI=find(["transcription","transcripcion","contenttranscription","contentdialogue","contentdialoguetranscription"]);
+  let dialogI=find(["dialogue","dialog","parlamento","texto","translation"]);
+  let tagI=find(["tags","tag","type"]);
+  let annotI=find(["annotations","annotation"]);
+  let onscreenI=find(["sourceonscreen","onscreen"]);
+  // If transcription found but not dialog, swap (Disney format has CONTENT as main, TRANSLATION as secondary)
+  if(transcI>=0&&dialogI<0){dialogI=transcI;transcI=-1}
+  if(tcInI<0||tcOutI<0)return{entries:[],error:"No TC columns found in row "+(headerIdx+1)+". Headers: "+headers.filter(Boolean).join(", ")};
   const entries=[];let idx=0;
-  for(const row of data){
-    const tcIn=String(row[tcInCol]||"").trim(),tcOut=String(row[tcOutCol]||"").trim();
+  for(let r=headerIdx+1;r<allData.length;r++){
+    const row=allData[r];
+    const tcIn=String(row[tcInI]||"").trim(),tcOut=String(row[tcOutI]||"").trim();
     if(!tcIn||!/\d{2}[;:]\d{2}[;:]\d{2}[;:]\d{2}/.test(tcIn))continue;idx++;
-    entries.push({idx,source:srcCol?String(row[srcCol]||"").trim():"",transcription:transcCol?String(row[transcCol]||"").trim():"",
-      dialog:dialogCol?String(row[dialogCol]||"").trim():"",tags:tagCol?String(row[tagCol]||"").trim():"",
-      annotations:annotCol?String(row[annotCol]||"").trim():"",onscreen:onscreenCol?String(row[onscreenCol]||"").trim():"",
+    entries.push({idx,
+      source:srcI>=0?String(row[srcI]||"").trim():"",
+      transcription:transcI>=0?String(row[transcI]||"").trim():"",
+      dialog:dialogI>=0?String(row[dialogI]||"").trim():"",
+      tags:tagI>=0?String(row[tagI]||"").trim():"",
+      annotations:annotI>=0?String(row[annotI]||"").trim():"",
+      onscreen:onscreenI>=0?String(row[onscreenI]||"").trim():"",
       tcIn,tcOut,framesIn:tcToFrames(tcIn),framesOut:tcToFrames(tcOut)});
   }
   return{entries,error:null};
+}
+
+/* ── Parse DOCX Dub Script ────────────────────────── */
+function parseDocxHtml(html){
+  const parser=new DOMParser();const doc=parser.parseFromString(html,"text/html");
+  const tables=doc.querySelectorAll("table");
+  let dataTable=null;
+  for(const t of tables){if(t.rows.length>10)dataTable=t}
+  if(!dataTable&&tables.length)dataTable=tables[tables.length-1];
+  if(!dataTable)return[];
+  const entries=[];let idx=0;
+  const hCells=[...dataTable.rows[0].cells].map(c=>c.textContent.trim().toUpperCase());
+  let tcI=hCells.findIndex(h=>/^TC$|TIMECODE/i.test(h));
+  let srcI=hCells.findIndex(h=>/PERSONAJE|CHARACTER|SOURCE/i.test(h));
+  let dlgI=hCells.findIndex(h=>/DI[AÁ]LOGO|DIALOGUE|DIALOG/i.test(h));
+  if(tcI<0)tcI=0;if(srcI<0)srcI=1;if(dlgI<0)dlgI=2;
+  for(let r=1;r<dataTable.rows.length;r++){
+    const cells=[...dataTable.rows[r].cells].map(c=>c.textContent.trim());
+    const rawTC=cells[tcI]||"";const src=cells[srcI]||"";const dlg=cells[dlgI]||"";
+    if(!rawTC||!src)continue;
+    let tcIn=rawTC;
+    const parts=rawTC.split(/[:.;]/);
+    if(parts.length===2)tcIn="00:"+parts[0].padStart(2,"0")+":"+parts[1].padStart(2,"0")+":00";
+    else if(parts.length===3)tcIn=parts[0].padStart(2,"0")+":"+parts[1].padStart(2,"0")+":"+parts[2].padStart(2,"0")+":00";
+    idx++;
+    entries.push({idx,source:src,transcription:"",dialog:dlg,tags:"",annotations:"",onscreen:"",
+      tcIn,tcOut:tcIn,framesIn:tcToFrames(tcIn),framesOut:tcToFrames(tcIn)});
+  }
+  return entries;
+}
+
+/* ── Parse LL (Localization List) ─────────────────── */
+function parseLL(wb){
+  const sheetName=wb.SheetNames.find(s=>/^LL$/i.test(s))||wb.SheetNames[0];
+  const sheet=wb.Sheets[sheetName];
+  const allData=XLSX.utils.sheet_to_json(sheet,{defval:"",header:1});
+  let headerIdx=0;
+  for(let i=0;i<Math.min(10,allData.length);i++){
+    if(allData[i].some(c=>typeof c==="string"&&/TC\s*IN|TIMECODE/i.test(String(c)))){headerIdx=i;break}
+  }
+  const headers=allData[headerIdx].map(h=>String(h||"").trim());
+  const fi=(pats)=>headers.findIndex(h=>{const n=h.toLowerCase().replace(/[\s_\-:]+/g,"");return pats.some(p=>n.includes(p))});
+  const tcInI=fi(["tcin"]);const typeI=fi(["type"]);const charI=fi(["charactersource"]);
+  const contentI=fi(["contentdialogue","contentdialogueson"]);
+  const annotI=fi(["onscreentext","onscreentextannotation"]);
+  const dubI=fi(["dubbinginstructions","dubbinginstruction"]);
+  const terms=[];
+  for(let r=headerIdx+1;r<allData.length;r++){
+    const row=allData[r];
+    const status=String(row[0]||"").trim();if(status&&status!=="Active")continue;
+    const type=typeI>=0?String(row[typeI]||"").trim():"";
+    const char=charI>=0?String(row[charI]||"").trim():"";
+    const content=contentI>=0?String(row[contentI]||"").trim():"";
+    const annot=annotI>=0?String(row[annotI]||"").trim():"";
+    const dub=dubI>=0?String(row[dubI]||"").trim():"";
+    const tcIn=tcInI>=0?String(row[tcInI]||"").trim():"";
+    if(!content&&!annot)continue;
+    terms.push({term:content.split("\n")[0].substring(0,40),type,definition:(annot&&annot!=="N/A"?annot+". ":"")+(dub&&dub!=="N/A"?"Dub: "+dub:""),
+      esLatam:"",esNotes:dub&&dub!=="N/A"?dub:"",tcIn});
+  }
+  return terms;
 }
 
 /* ── Parse KNP ─────────────────────────────────────── */
@@ -127,26 +205,67 @@ function matchDubToPldl(pldl,dub){
   // Pass 1: Exact English text (handles projects where TCs differ but TRANSCRIPTION=English, e.g. Crooks)
   const dubByText={};for(const d of dub){const k=d.transcription.trim().toLowerCase();if(k){if(!dubByText[k])dubByText[k]=[];dubByText[k].push(d)}}
   for(const p of pldl){if(map[p.idx])continue;const k=p.dialog.trim().toLowerCase();if(dubByText[k]){const a=dubByText[k].find(d=>!used.has(d.idx));if(a){map[p.idx]=a;used.add(a.idx)}}}
-  // Pass 2: TC overlap fallback (wide tolerance + same source)
-  for(const p of pldl){if(map[p.idx])continue;const m=dub.find(d=>!used.has(d.idx)&&d.source.toUpperCase()===p.source.toUpperCase()&&tcOverlap(p.framesIn,p.framesOut,d.framesIn,d.framesOut,1200));if(m){map[p.idx]=m;used.add(m.idx)}}
+  // Pass 2: Reverse matching — each unmatched dub entry finds its closest PLDL entry (same source)
+  // This handles DOCX with MM:SS TCs and different entry counts gracefully
+  const assigned={}; // pldlIdx → [dubEntries]
+  const unmatchedDub=dub.filter(d=>!used.has(d.idx));
+  for(const d of unmatchedDub){
+    if(d.framesIn==null)continue;
+    const src=d.source.toUpperCase();
+    let bestP=null,bestDist=Infinity;
+    for(const p of pldl){
+      if(p.source.toUpperCase()!==src)continue;
+      if(p.framesIn==null)continue;
+      const dist=Math.abs(p.framesIn-d.framesIn);
+      if(dist<bestDist&&dist<1200){bestDist=dist;bestP=p}
+    }
+    if(bestP){
+      if(!assigned[bestP.idx])assigned[bestP.idx]=[];
+      assigned[bestP.idx].push(d);
+    }
+  }
+  // Merge into map: concatenate dialogs sorted by TC
+  for(const[pidx,dubs] of Object.entries(assigned)){
+    const pi=parseInt(pidx);
+    dubs.sort((a,b)=>(a.framesIn||0)-(b.framesIn||0));
+    if(map[pi]){
+      // Already has a match from Pass 0/1, append extras
+      const all=[map[pi],...dubs].sort((a,b)=>(a.framesIn||0)-(b.framesIn||0));
+      map[pi]={...map[pi],dialog:all.map(d=>d.dialog).join(" / ")};
+    }else{
+      // No prior match, use first as base and concatenate rest
+      map[pi]={...dubs[0],dialog:dubs.map(d=>d.dialog).join(" / ")};
+    }
+  }
   return map;
 }
 
 /* ── Source→Track ──────────────────────────────────── */
+function editDist(a,b){if(a.length>b.length)[a,b]=[b,a];const r=Array.from({length:a.length+1},(_,i)=>i);for(let j=1;j<=b.length;j++){let prev=r[0];r[0]=j;for(let i=1;i<=a.length;i++){const t=r[i];r[i]=a[i-1]===b[j-1]?prev:1+Math.min(prev,r[i],r[i-1]);prev=t}}return r[a.length]}
 function buildSTMap(entries,clips){
   const tracks=[...new Set(clips.map(c=>c.track))],sources=[...new Set(entries.map(e=>e.source).filter(Boolean))],m={};
-  for(const src of sources){const sn=norm(src),sf=norm(src.split(/\s+/)[0]);const t=tracks.find(t=>{const tn=norm(t);return tn.startsWith(sn+"_")||tn===sn||tn.startsWith(sf+"_")||tn===sf});if(t)m[src]=t}
+  for(const src of sources){
+    const sn=norm(src),sf=norm(src.split(/\s+/)[0]);
+    // Exact match first
+    const t=tracks.find(t=>{const tn=norm(t);return tn.startsWith(sn+"_")||tn===sn||tn.startsWith(sf+"_")||tn===sf});
+    if(t){m[src]=t;continue}
+    // Fuzzy fallback: find track whose norm'd name starts with something close to sn (edit distance ≤ 2)
+    let best=null,bestD=3;
+    for(const tr of tracks){const tn=norm(tr);const prefix=tn.split("_").slice(0,sn.split("_").length).join("_");const d=editDist(sn,prefix);if(d<bestD){bestD=d;best=tr}}
+    if(best)m[src]=best;
+  }
   return m;
 }
 
 /* ── Matching ──────────────────────────────────────── */
-function matchClips(entries,clips,tol,stMap){
+function matchClips(entries,clips,tol,stMap,offset=0){
   const tcm={};for(const c of clips){if(!tcm[c.track])tcm[c.track]=[];tcm[c.track].push(c)}
-  function belongs(cn,src){if(!src)return false;const sn=norm(src),sf=norm(src.split(/\s+/)[0]),nn=norm(cn);return nn.includes(sn)||nn.startsWith(sf+"_")}
+  function belongs(cn,src){if(!src)return false;const sn=norm(src),sf=norm(src.split(/\s+/)[0]),nn=norm(cn);if(nn.includes(sn)||nn.startsWith(sf+"_"))return true;const prefix=nn.split("_").slice(0,sn.split("_").length).join("_");return editDist(sn,prefix)<=2}
   return entries.map(e=>{
+    const fIn=e.framesIn+offset,fOut=e.framesOut+offset;
     const tn=stMap[e.source];
-    if(tn){const cands=[...(tcm[tn]||[]),...(tcm[tn+"_REACS"]||[])];const m=cands.find(c=>tcOverlap(e.framesIn,e.framesOut,c.framesIn,c.framesOut,tol));if(m)return{...e,matched:true,matchedClip:m}}
-    const ext=clips.find(c=>{if(tn&&c.track===tn)return false;if(!belongs(c.name,e.source))return false;return tcOverlap(e.framesIn,e.framesOut,c.framesIn,c.framesOut,tol)});
+    if(tn){const cands=[...(tcm[tn]||[]),...(tcm[tn+"_REACS"]||[])];const m=cands.find(c=>tcOverlap(fIn,fOut,c.framesIn,c.framesOut,tol));if(m)return{...e,matched:true,matchedClip:m}}
+    const ext=clips.find(c=>{if(tn&&c.track===tn)return false;if(!belongs(c.name,e.source))return false;return tcOverlap(fIn,fOut,c.framesIn,c.framesOut,tol)});
     if(ext)return{...e,matched:true,matchedClip:ext};
     return{...e,matched:false,matchedClip:null};
   });
@@ -241,12 +360,28 @@ function App(){
 
   const loadXlsx=(file,cb)=>{const r=new FileReader();r.onload=e=>{try{cb(XLSX.read(new Uint8Array(e.target.result),{type:"array"}))}catch(err){setError("Error: "+err.message)}};r.readAsArrayBuffer(file)};
   const handlePldl=useCallback(f=>{setPldlFile(f);setError(null);setResults(null);loadXlsx(f,wb=>{const{entries,error:err}=parseExcel(wb);if(err){setError("PLDL: "+err);return}if(!entries.length){setError("PLDL: No se encontraron entradas con timecodes válidos. Verifica que las columnas IN-TIMECODE/OUT-TIMECODE tengan formato HH:MM:SS:FF o HH:MM:SS;FF");return}setPldlEntries(entries)})},[]);
-  const handleDub=useCallback(f=>{setDubFile(f);setError(null);setResults(null);loadXlsx(f,wb=>{const{entries,error:err}=parseExcel(wb);if(err){setError("Dub Script: "+err);return}if(!entries.length){setError("Dub Script: No se encontraron entradas con timecodes válidos.");return}setDubEntries(entries)})},[]);
-  const handleKnp=useCallback(f=>{setKnpFile(f);setError(null);loadXlsx(f,wb=>{const terms=parseKNP(wb);if(!terms.length){setError("KNP: No se encontraron términos. Verifica que el archivo tenga columnas Term, Term Type, Term Definition.");return}setKnpTerms(terms);setVisibleCols(prev=>({...prev,knp:true}))})},[]);
+  const handleDub=useCallback(f=>{setDubFile(f);setError(null);setResults(null);
+    if(f.name.toLowerCase().endsWith(".docx")){
+      const r=new FileReader();r.onload=e=>{
+        mammoth.convertToHtml({arrayBuffer:e.target.result}).then(result=>{
+          const entries=parseDocxHtml(result.value);
+          if(!entries.length){setError("Dub Script DOCX: No se encontró tabla con TC/PERSONAJE/DIÁLOGO.");return}
+          setDubEntries(entries);
+        }).catch(err=>setError("Dub Script DOCX: "+err.message));
+      };r.readAsArrayBuffer(f);
+    }else{loadXlsx(f,wb=>{const{entries,error:err}=parseExcel(wb);if(err){setError("Dub Script: "+err);return}if(!entries.length){setError("Dub Script: No se encontraron entradas con timecodes válidos.");return}setDubEntries(entries)})}
+  },[]);
+  const handleKnp=useCallback(f=>{setKnpFile(f);setError(null);loadXlsx(f,wb=>{
+    // Try KNP first, then LL format
+    let terms=parseKNP(wb);
+    if(!terms.length)terms=parseLL(wb);
+    if(!terms.length){setError("KNP/LL: No se encontraron términos. Verifica el formato del archivo.");return}
+    setKnpTerms(terms);setVisibleCols(prev=>({...prev,knp:true}))
+  })},[]);
   const handlePt=useCallback(f=>{setPtFile(f);setError(null);setResults(null);const r=new FileReader();r.onload=e=>{try{const{clips:c,meta}=parsePT(e.target.result);setPtClips(c);setPtMeta(meta);setPtInfo({total:c.length,tracks:[...new Set(c.map(x=>x.track))]});if(!c.length)setError("Pro Tools: No se encontraron clips en TRACK LISTING. Verifica que el export incluya la sección de clips (Session Info as Text con la opción de clips activada).")}catch(err){setError("Pro Tools: "+err.message)}};r.readAsText(f,"latin1")},[]);
 
   const SKIP=["WALLA","MAIN TITLE","GRAPHICS INSERTS","GRAPHICS","AD","FOREST BLAKK","JOY WILLIAMS","PRINCIPAL PHOTOGRAPHY"];
-  const REACTION_RE=/^\s*[\[(]?\s*(REAC|REACTION|RISA|LLANTO|GRITO|SUSPIRO|JADEO)/i;
+  const REACTION_RE=/^\s*[\[(]?\s*(REAC(TION)?|RISA|LLANTO|GRITO|SUSPIRO|JADEO)\s*[\])]?\s*$/i;
   
   // All sources from PLDL for exclusion UI
   const allPldlSources=useMemo(()=>{
@@ -260,6 +395,11 @@ function App(){
   const runCheck=useCallback(()=>{
     if(!pldlEntries.length||!ptClips.length)return;
     const stm=buildSTMap(pldlEntries,ptClips);setTrackMapping(stm);
+    // Auto-detect TC offset from earliest clip in PT (includes stems that start at session content)
+    const fps=ptMeta?.fps||24;
+    const halfHourF=Math.round(fps*1800);
+    const earliestF=ptMeta?.earliestFrame||0;
+    const offset=earliestF>halfHourF?earliestF:0;
     // Filter non-dialog sources (WALLA, GRAPHICS, etc.) — these truly get removed
     let ent=pldlEntries;
     if(excludeNonDialog)ent=ent.filter(e=>{
@@ -272,7 +412,7 @@ function App(){
     });
     if(dubEntries.length>0)setDubMapping(matchDubToPldl(ent,dubEntries));else setDubMapping({});
     // Match ALL remaining entries
-    const matched=matchClips(ent,ptClips,tolerance,stm);
+    const matched=matchClips(ent,ptClips,tolerance,stm,offset);
     // Flag excluded sources and reactions as "skipped" so they appear but don't count as missing
     const results=matched.map(r=>{
       const isExcludedSrc=excludedSources.has(r.source);
@@ -280,7 +420,7 @@ function App(){
       return{...r,skipped:isExcludedSrc||isReaction};
     });
     setResults(results);setFilter("all");setSourceFilter("ALL");
-  },[pldlEntries,dubEntries,ptClips,tolerance,excludeNonDialog,excludeReactions,excludedSources]);
+  },[pldlEntries,dubEntries,ptClips,ptMeta,tolerance,excludeNonDialog,excludeReactions,excludedSources]);
 
   const hasDub=dubEntries.length>0,hasKnp=knpTerms.length>0;
   const sources=useMemo(()=>results?["ALL",...[...new Set(results.map(r=>r.source).filter(Boolean))].sort()]:[],[results]);
@@ -476,8 +616,8 @@ function App(){
         {/* Upload */}
         <div style={{display:"flex",gap:10,marginTop:24,flexWrap:"wrap"}}>
           <DropZone label="PLDL (.xlsx)" hint="Dialog List original" accept=".xlsx,.xls" onFile={handlePldl} fileName={pldlFile?.name} icon="📄" />
-          <DropZone label="Dub Script (.xlsx)" hint="Guion traducido" accept=".xlsx,.xls" onFile={handleDub} fileName={dubFile?.name} icon="🌐" optional />
-          <DropZone label="KNP (.xlsx)" hint="Key Names & Phrases" accept=".xlsx,.xls" onFile={handleKnp} fileName={knpFile?.name} icon="📖" optional />
+          <DropZone label="Dub Script (.xlsx/.docx)" hint="Guion traducido" accept=".xlsx,.xls,.docx" onFile={handleDub} fileName={dubFile?.name} icon="🌐" optional />
+          <DropZone label="KNP / LL (.xlsx)" hint="Terminología o Localization List" accept=".xlsx,.xls" onFile={handleKnp} fileName={knpFile?.name} icon="📖" optional />
           <DropZone label="Pro Tools (.txt)" hint="Session Info as Text" accept=".txt,.text" onFile={handlePt} fileName={ptFile?.name} icon="🎛️" />
         </div>
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0] - 2026-04-08
+
+### Agregado
+- **Soporte Disney**: PLDL formato DIA_ENG (headers en fila 5, sheet "Dialogue List" auto-detectado), Dub Script en .docx (tabla con TC en MM:SS), LL como alternativa a KNP.
+- **DOCX Dub Script**: Parsing via mammoth.js → HTML → tabla DOM. TCs MM:SS convertidos a 00:MM:SS:00. Matching inverso: cada línea del DOCX busca su PLDL más cercana, múltiples líneas se agrupan con " / ".
+- **LL (Localization List)**: Auto-detectado cuando KNP no encuentra términos. Extrae tipo, contenido, instrucciones de doblaje (DO NOT DUB, TRANSLATE & DUB).
+- **TC offset automático**: Detecta sesiones que inician en 00:59:59:00 (Disney) usando el clip más temprano. Aplica offset a todos los TCs de la PLDL.
+- **Fuzzy matching** (edit distance ≤ 2): Atrapa typos en tracks/clips de PT. Casos reales: CAMlLLA (l vs I), TIFANNY (doble N), MIKEY vs MICKEY.
+- **Guion normalization**: Ahora normaliza guiones a underscores. LARS-ERIK → LARS_ERIK.
+
+### Corregido
+- **Reacciones con diálogo**: Regex ahora exige que la reacción sea el contenido completo de la celda (`$` anchor). `[REACTION] Thank you.` ya no se excluye.
+- **Dub Script matching**: Reescrito como matching inverso — el DOCX busca la PLDL, no al revés. Elimina desalineamientos en cascada cuando hay diferente cantidad de entradas.
+
 ## [1.1.0] - 2026-04-04
 
 ### Agregado

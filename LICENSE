@@ -1,21 +1,49 @@
-MIT License
+PROPRIETARY SOFTWARE LICENSE
 
-Copyright (c) 2026 Said / Newart
+Copyright (c) 2026 Said Robles Nájera. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+OWNERSHIP
+This software, "Dubbing Clip Checker" (DCC), including all source code,
+documentation, and associated files, is the exclusive intellectual property
+of Said Robles Nájera (hereinafter "the Author").
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+GRANT OF LICENSE
+The Author grants Newart Media S.A. de C.V. (hereinafter "the Company") a
+non-exclusive, non-transferable, revocable license to use this software
+solely for internal quality control operations within the Company.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+RESTRICTIONS
+The Company and any recipient of this software SHALL NOT:
+
+  1. Modify, adapt, alter, or create derivative works of this software.
+  2. Redistribute, sublicense, sell, lease, or otherwise transfer this
+     software to any third party, including but not limited to clients,
+     contractors, partner studios, or affiliated companies.
+  3. Reverse engineer, decompile, or disassemble the software beyond
+     what is permitted by applicable law.
+  4. Remove, alter, or obscure any copyright notices or proprietary
+     markings contained in the software.
+  5. Use the software as a basis for developing competing or similar
+     tools without written authorization from the Author.
+
+ATTRIBUTION
+Any public or internal reference to this software must credit the Author
+by name: "Dubbing Clip Checker by Said Robles."
+
+TERMINATION
+This license may be revoked by the Author at any time with written notice.
+Upon termination, the Company must cease all use of the software and
+destroy all copies in its possession.
+
+NO WARRANTY
+This software is provided "as is" without warranty of any kind, express
+or implied. The Author shall not be liable for any damages arising from
+the use of this software.
+
+GOVERNING LAW
+This license shall be governed by the laws of Mexico. Any disputes arising
+under this license shall be resolved in the courts of Mexico City.
+
+---
+Author: Said Robles Nájera
+Date: April 2026
