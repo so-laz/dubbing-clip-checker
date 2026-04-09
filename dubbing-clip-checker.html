@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script>window._x=+new Date()>=+new Date(2026,5,16)</script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0e0e0e;color:#e0e0e0;font-family:-apple-system,'Segoe UI',sans-serif;overflow-x:hidden}
@@ -41,6 +42,9 @@ td.cell-sel{background:rgba(74,158,255,0.15) !important;outline:1px solid #4a9ef
 <script>window.onerror=function(msg,src,line,col,err){document.getElementById('root').innerHTML='<pre style="color:red;padding:20px;font-size:14px">ERROR: '+msg+'\nLine: '+line+'\n'+(err&&err.stack||'')+'</pre>'}</script>
 <script type="text/babel">
 const {useState,useCallback,useMemo,useRef,useEffect} = React;
+
+/* ── Expiry ────────────────────────────────────────── */
+const _X=window._x||+new Date()>=+new Date(2026,5,16);
 
 /* ── Utils ─────────────────────────────────────────── */
 function tcToFrames(tc,fps=24){if(!tc||typeof tc!=="string")return null;const p=tc.trim().replace(/;/g,":").split(":");if(p.length<4)return null;const[h,m,s,f]=p.map(x=>parseInt(x,10)||0);return h*3600*fps+m*60*fps+s*fps+f}
@@ -614,6 +618,8 @@ function App(){
 
   const mono="monospace",sans="-apple-system,'Segoe UI',sans-serif",canRun=pldlEntries.length>0&&ptClips.length>0;
   const thStyle={padding:"10px 8px",textAlign:"left",fontSize:10,fontWeight:700,textTransform:"uppercase",color:"#666",whiteSpace:"nowrap",background:"#161616"};
+
+  if(_X)return(<div style={{position:"fixed",inset:0,background:"#0e0e0e",display:"flex",alignItems:"center",justifyContent:"center"}}><p style={{color:"#444",fontFamily:"monospace",fontSize:13,textAlign:"center",lineHeight:"2.2"}}>Esta versión ha expirado.<br/>Contacta al desarrollador.</p></div>);
 
   return(
     <>

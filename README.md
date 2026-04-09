@@ -1,5 +1,5 @@
 # Dubbing Clip Checker (DCC)
-**v1.2.0 — Proyecto Cyrillica · Said R. Nájera**
+**v1.15.0 — Proyecto Cyrillica · Said R. Nájera**
 
 ---
 
@@ -106,7 +106,7 @@ El botón 👤 **Personajes** permite excluir fuentes específicas del conteo (p
 
 ## Versión y autoría
 
-**v1.2.0**
+**v1.15.0**
 Said R. Nájera — Newart, Ciudad de México
 Proyecto Cyrillica
 
