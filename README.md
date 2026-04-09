@@ -1,109 +1,115 @@
-# 🐘 Dubbing Clip Checker (DCC)
-
-Herramienta web standalone para cotejo automatizado de clips de doblaje. Cruza el Dialog List del cliente (PLDL) contra la sesión de Pro Tools para detectar diálogos faltantes.
-
-Desarrollado para el flujo de QC de **Newart** (doblaje, Ciudad de México).
+# Dubbing Clip Checker (DCC)
+**v1.2.0 — Proyecto Cyrillica · Said R. Nájera**
 
 ---
 
-## Cómo funciona
+## ¿Qué es?
 
-1. Sube la **PLDL** (.xlsx) — Dialog List del cliente
-2. *(Opcional)* **Dub Script** (.xlsx) — Guion traducido al español
-3. *(Opcional)* **KNP** (.xlsx) — Key Names & Phrases del cliente
-4. Exporta tu sesión: `File → Export → Session Info as Text`
-5. Ajusta tolerancia y dale **▶ Cotejar**
+Dubbing Clip Checker es una herramienta de control de calidad para estudios de doblaje. Cruza automáticamente la Dialog List del cliente (PLDL) contra el Session Info exportado de Pro Tools para detectar clips faltantes: líneas que están en el guion pero no tienen clip grabado en la sesión.
 
-### Matching de clips (3 niveles)
-
-1. **Track principal** — Mapea SOURCE → track de PT por nombre normalizado
-2. **Todos los tracks** — Busca en FUTZ, ALT, SEC_*, etc., verificando que el clip pertenezca al personaje
-3. **No encontrado** → marca como FALTANTE
-
-### Normalización
-
-| Caso | PLDL | Pro Tools |
-|------|------|-----------|
-| Acentos | `MÜLLER` | `MULLER_OscarFlores` |
-| Apóstrofes | `ZACK'S MOTHER` | `ZACKS_MOTHER_LauraTorres` |
-| Espacios | `VANESSA LACHEY` | `VANESSA_LACHEY_JulietaRivera` |
-| Drop frame | `00:08:22;12` | `00:08:22:12` |
-
-Filtra automáticamente stems y mezclas (clips > 2 minutos).
+No requiere instalación ni conexión a internet. Funciona directamente en el navegador abriendo el archivo `.html`.
 
 ---
 
-## Funciones
+## Requisitos
 
-### Cotejo
-- Tolerancia configurable ±0 a ±24 frames
-- Exclusión automática de no-diálogo (WALLA, GRAPHICS, TITLES, SONGS, AD, PRINCIPAL PHOTOGRAPHY)
-- Exclusión manual de personajes (👤 Personajes) — aparecen como EXCLUIDO sin inflar faltantes
-- Exclusión de reacciones ([REACTION], [REAC], (RISA), etc.)
-- Filtros: Todos / Faltantes / Grabados / Excluidos + por personaje + búsqueda libre
+- Navegador moderno (Chrome, Safari, Firefox, Edge — versión 2022 o posterior)
+- No requiere instalación, servidor ni conexión a internet
 
-### Soporte trilingüe (Dub Script opcional)
-- Selector de idioma: Original / ENG / ESP
-- **Cmd+L** cicla entre idiomas
-- Cruce PLDL ↔ Dub Script: TC exacto + Source → texto inglés → TC overlap (±50s)
+---
 
-### KNP — Key Names & Phrases (opcional)
-- Resalta términos en diálogo con tooltip flotante (hover)
-- Columna KNP con términos detectados por línea
-- Matching por palabra completa (no matchea dentro de otras palabras)
+## Archivos de prueba incluidos
 
-### Tabla tipo Excel
-- Columnas configurables y redimensionables
-- Navegación: flechas, Tab, Shift+flechas para rango
-- **Enter** = textarea con cursor libre dentro de la celda
-- **Cmd+C** = copia celdas seleccionadas (funciona en file://)
-- **Escape** = salir de modo texto o deseleccionar
+| Archivo | Descripción |
+|---|---|
+| `test_PLDL.xlsx` | Dialog List de ejemplo (serie ficticia *Dark Echoes*) |
+| `test_DUB_SCRIPT.xlsx` | Guion de doblaje en español |
+| `test_ProTools_SessionInfo.txt` | Session Info exportado de Pro Tools |
+| `test_KNP.xlsx` | Key Names & Phrases (terminología) |
 
-### Diccionarios (Cmd+D)
-- Popup con links directos a DLE (RAE), DEM (Colmex), DA (ASALE)
-- Funciona con texto seleccionado en modo textarea o con celda completa
+---
 
-### Exportar
-- **↓ Descargar faltantes** (.tsv)
-- **📋 Copiar** al portapapeles (tab-separated, compatible Excel)
+## Cómo usarlo
+
+### 1. Abrir la herramienta
+Haz doble clic en `dubbing-clip-checker.html`. Se abre en el navegador sin instalación.
+
+### 2. Cargar los archivos (en este orden recomendado)
+
+| Zona | Archivo | Obligatorio |
+|---|---|---|
+| **PLDL** | Dialog List del cliente (`.xlsx`) | Sí |
+| **Dub Script** | Guion traducido (`.xlsx` o `.docx`) | No |
+| **KNP / LL** | Key Names & Phrases o Localization List (`.xlsx`) | No |
+| **Pro Tools** | Session Info exportado como texto (`.txt`) | Sí |
+
+> **Exportar Session Info de Pro Tools:**
+> `File → Export → Session Info as Text`
+> Guardar con codificación **Mac Roman / Latin-1** (opción por defecto en Mac).
+
+### 3. Ajustar tolerancia
+El campo **Tolerancia** (en fotogramas) define cuánto puede desfasarse un clip respecto al TC del PLDL y aun así considerarse grabado. El valor por defecto es 6 fotogramas.
+
+### 4. Cotejar
+Haz clic en **Cotejar**. Los resultados aparecen en la tabla.
+
+---
+
+## Requisitos de columnas para archivos de entrada
+
+La herramienta detecta columnas por nombre de encabezado (sin distinción de mayúsculas ni acentos). Las siguientes columnas son **obligatorias**:
+
+| Columna | Nombres aceptados (ejemplos) |
+|---|---|
+| TC In | `IN-TIMECODE`, `TIMECODE IN`, `TC IN` |
+| TC Out | `OUT-TIMECODE`, `TIMECODE OUT`, `TC OUT` |
+| Personaje / Fuente | `SOURCE`, `CHARACTER`, `CHARACTER :: SOURCE`, `PERSONAJE` |
+| Diálogo | `DIALOGUE`, `DIALOG`, `CONTENT :: DIALOGUE TRANSCRIPTION` |
+
+Las demás columnas (anotaciones, tags, onscreen, transcripción) son opcionales. Si falta alguna columna obligatoria, la herramienta indica exactamente cuál no se encontró y lista los encabezados detectados.
+
+---
+
+## Resultados
+
+Cada línea del PLDL aparece con uno de estos estados:
+
+| Estado | Color | Significado |
+|---|---|---|
+| **GRABADO** | Verde | Se encontró un clip en Pro Tools que corresponde a esta línea |
+| **FALTANTE** | Rojo | No hay clip en la sesión que coincida con esta línea |
+| **EXCLUIDO** | Gris | La fuente fue excluida manualmente o por filtro de no-diálogo |
+
+### Filtro de no-diálogo
+Activado por defecto. Excluye fuentes como `WALLA`, `MAIN TITLE`, `GRAPHICS INSERTS`, `PRINCIPAL PHOTOGRAPHY`, `AD`, entre otras, y líneas con tags `INAUDIBLE`, `SONG`, `GRAPHICS INSERTS`, `MAIN TITLE`.
+
+> El filtro usa coincidencia exacta de tag: `MAIN TITLE IN DIALOGUE` **no** se excluye porque no es exactamente `MAIN TITLE`.
+
+### Exclusión de personajes
+El botón 👤 **Personajes** permite excluir fuentes específicas del conteo (por ejemplo, NARRATOR). Las líneas excluidas aparecen en gris y no se cuentan como faltantes.
 
 ---
 
 ## Atajos de teclado
 
 | Atajo | Acción |
-|-------|--------|
-| `↑↓←→` | Navegar entre celdas |
-| `Shift+↑↓←→` | Extender selección |
-| `Tab` / `Shift+Tab` | Siguiente / anterior celda |
-| `Enter` | Modo texto (textarea con cursor) |
-| `Escape` | Salir de modo texto / deseleccionar |
-| `Cmd+C` | Copiar celdas o texto seleccionado |
-| `Cmd+L` | Ciclar idioma (Original → ENG → ESP) |
-| `Cmd+D` | Buscar en diccionarios (DLE, DEM, DA) |
+|---|---|
+| `↑ ↓ ← →` | Navegar por la tabla |
+| `Shift + ↑↓←→` | Extender selección |
+| `Enter` | Entrar en modo texto (selección parcial dentro de la celda) |
+| `Escape` | Salir de modo texto o deseleccionar |
+| `Cmd + C` | Copiar celdas seleccionadas (separadas por tabulador) |
+| `Cmd + L` | Cambiar idioma: Original → ENG → ESP |
+| `Cmd + D` | Abrir diccionario (DLE/RAE, DEM/Colmex, DA/ASALE) para la palabra seleccionada |
 
 ---
 
-## Requisitos
+## Versión y autoría
 
-- Navegador web moderno (Chrome 90+, Safari 14+, Firefox 88+)
-- Conexión a internet (CDN: React 18, Babel, SheetJS)
-- No requiere instalación ni servidor
-
----
-
-## Compatibilidad probada
-
-| Proyecto | FPS | Notas |
-|----------|-----|-------|
-| Love Is Blind S10 | 23.976 | Netflix |
-| Crooks S2 | 24 | Netflix, TCs diferentes entre PLDL y Dub Script |
-| Salish & Jordan Matter S1 | 29.97 drop | Netflix, TCs idénticos, TRANSCRIPTION vacía |
-| The Boroughs S1 | 24 | Netflix, tracks numéricos, tag MAIN TITLE IN DIALOGUE |
-| Stranger Things | 24 | KNP testing |
+**v1.2.0**
+Said R. Nájera — Newart, Ciudad de México
+Proyecto Cyrillica
 
 ---
 
-## Licencia
-
-MIT — Ver [LICENSE](LICENSE)
+*Uso interno. No distribuir fuera del estudio.*
