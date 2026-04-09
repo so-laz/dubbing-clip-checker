@@ -86,7 +86,8 @@ function parseExcel(wb){
     if(row.some(c=>typeof c==="string"&&/(timecode|tc\s*in|in.?timecode)/i.test(c))){headerIdx=i;break}
   }
   const headers=allData[headerIdx].map(h=>String(h||"").trim());
-  const find=(pats)=>headers.findIndex(h=>{const n=h.toLowerCase().replace(/[\s_\-:]+/g,"");return pats.some(p=>n.includes(p))});
+  const normH=(h)=>h.normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[\s_\-:]+/g,"");
+  const find=(pats)=>headers.findIndex(h=>{const n=normH(h);return pats.some(p=>n.includes(p))});
   let tcInI=find(["timecodein","intimecode","tcin","timein"]);
   let tcOutI=find(["timecodeout","outtimecode","tcout","timeout"]);
   let srcI=find(["charactersource","source","character","personaje"]);
@@ -97,7 +98,12 @@ function parseExcel(wb){
   let onscreenI=find(["sourceonscreen","onscreen"]);
   // If transcription found but not dialog, swap (Disney format has CONTENT as main, TRANSLATION as secondary)
   if(transcI>=0&&dialogI<0){dialogI=transcI;transcI=-1}
-  if(tcInI<0||tcOutI<0)return{entries:[],error:"No TC columns found in row "+(headerIdx+1)+". Headers: "+headers.filter(Boolean).join(", ")};
+  const missing=[];
+  if(tcInI<0)missing.push("TC In");
+  if(tcOutI<0)missing.push("TC Out");
+  if(srcI<0)missing.push("Character/Source");
+  if(dialogI<0&&transcI<0)missing.push("Dialogue");
+  if(missing.length)return{entries:[],error:"Columnas requeridas no encontradas: "+missing.join(", ")+". Encabezados detectados en fila "+(headerIdx+1)+": "+headers.filter(Boolean).join(", ")};
   const entries=[];let idx=0;
   for(let r=headerIdx+1;r<allData.length;r++){
     const row=allData[r];
@@ -404,7 +410,7 @@ function App(){
     let ent=pldlEntries;
     if(excludeNonDialog)ent=ent.filter(e=>{
       const s=e.source.toUpperCase();
-      if(SKIP.some(sk=>s.includes(sk)))return false;
+      if(SKIP.some(sk=>s===sk||s.startsWith(sk+" ")))return false;
       const tags=e.tags.split(",").map(t=>t.trim().toUpperCase());
       const SKIP_TAGS=["MAIN TITLE","GRAPHICS INSERTS","INAUDIBLE","SONG"];
       if(tags.some(tag=>SKIP_TAGS.includes(tag)))return false;
@@ -582,6 +588,14 @@ function App(){
     document.addEventListener("keydown",handler);return()=>document.removeEventListener("keydown",handler);
   },[sel,filtered,visCols,getCellText,textCell,anchor,hasDub,lang,dictPopup]);
 
+  // Keep selected row in view when language changes
+  useEffect(()=>{
+    if(!sel)return;
+    const r=Math.min(sel.r1,sel.r2);
+    const rowEl=document.querySelector('.sel-table tbody tr:nth-child('+(r+1)+')');
+    if(rowEl)rowEl.scrollIntoView({block:"nearest"});
+  },[lang]);
+
   // Auto-select cell text on Enter or double-click
   // Now handled by textarea focus
 
@@ -602,6 +616,7 @@ function App(){
   const thStyle={padding:"10px 8px",textAlign:"left",fontSize:10,fontWeight:700,textTransform:"uppercase",color:"#666",whiteSpace:"nowrap",background:"#161616"};
 
   return(
+    <>
     <div style={{minHeight:"100vh",background:"#0e0e0e",color:"#e0e0e0",fontFamily:sans,padding:"20px clamp(12px, 2vw, 30px) 40px"}} onClick={e=>{if(!e.target.closest('.sel-table')){setSel(null);setTextCell(null)}if(!e.target.closest('.dict-popup'))setDictPopup(null)}}>
       <div style={{maxWidth:1860,margin:"0 auto"}}>
         {/* Header */}
@@ -869,6 +884,10 @@ function App(){
         )}
       </div>
     </div>
+    <div style={{textAlign:"center",padding:"18px 0 10px",color:"#222",fontSize:10,fontFamily:"monospace",letterSpacing:"0.06em",userSelect:"none"}}>
+      Said R. Nájera &nbsp;·&nbsp; Proyecto Cyrillica — Dubbing Clip Checker &nbsp;·&nbsp; v1.15.1
+    </div>
+    </>
   );
 }
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
