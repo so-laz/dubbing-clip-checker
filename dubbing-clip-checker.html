@@ -367,6 +367,9 @@ function App(){
   const midiPiecesRef=useRef(new Array(8).fill(null));
   const midiAccessRef=useRef(null);
   const midiRxTimerRef=useRef(null);
+  const[midiLog,setMidiLog]=useState([]); // [{ts,status,data,hex,isQF}] last 20
+  const[showMidiDebug,setShowMidiDebug]=useState(false);
+  const[midiPiecesDisplay,setMidiPiecesDisplay]=useState(new Array(8).fill(null));
   // Column config
   const ALL_COLS=[
     {key:"idx",label:"#",default:true},{key:"status",label:"Status",default:true},{key:"source",label:"Source",default:true},
@@ -400,17 +403,28 @@ function App(){
   })},[]);
   const handlePt=useCallback(f=>{setPtFile(f);setError(null);setResults(null);const r=new FileReader();r.onload=e=>{try{const{clips:c,meta}=parsePT(e.target.result);setPtClips(c);setPtMeta(meta);setPtInfo({total:c.length,tracks:[...new Set(c.map(x=>x.track))]});if(!c.length)setError("Pro Tools: No se encontraron clips en TRACK LISTING. Verifica que el export incluya la sección de clips (Session Info as Text con la opción de clips activada).")}catch(err){setError("Pro Tools: "+err.message)}};r.readAsText(f,"latin1")},[]);
 
-  // MTC quarter-frame reconstruction (8 pieces → full SMPTE frame count)
-  const handleMtcMsg=useCallback(msg=>{
-    if(!msg.data||msg.data.length<2||msg.data[0]!==0xF1)return;
+  // Raw MIDI handler — logs ALL messages, reconstructs TC from 0xF1 quarter-frames
+  const handleRawMidi=useCallback(msg=>{
+    if(!msg.data||!msg.data.length)return;
+    const status=msg.data[0];
+    const data=Array.from(msg.data);
+    const isQF=status===0xF1;
+    const ts=(msg.timeStamp!=null?msg.timeStamp.toFixed(1):Date.now())+"ms";
+    const hex=data.map(b=>"0x"+b.toString(16).toUpperCase().padStart(2,"0")).join(" ");
+    const typeName=status===0xF1?"MTC QF":status===0xF8?"Clock":status===0xFE?"ActiveSense":status===0xFA?"Start":status===0xFB?"Continue":status===0xFC?"Stop":status===0xFF?"Reset":status===0xF2?"SongPos":status===0xF0?"SysEx":(status&0xF0)===0x90?"NoteOn":(status&0xF0)===0x80?"NoteOff":(status&0xF0)===0xB0?"CC":(status&0xF0)===0xE0?"PitchBend":"0x"+status.toString(16).toUpperCase();
+    const entry={ts,status,data,hex,isQF,typeName};
+    console.log("[DCC MIDI]",typeName,hex,ts);
+    setMidiLog(prev=>[entry,...prev].slice(0,20));
+    if(!isQF||data.length<2)return;
     const b=msg.data[1],piece=(b>>4)&0x7;
     midiPiecesRef.current[piece]=b&0xF;
-    if(midiPiecesRef.current.every(p=>p!==null)){
-      const p=midiPiecesRef.current;
-      const fr=p[0]|(p[1]<<4),sc=p[2]|(p[3]<<4),mn=p[4]|(p[5]<<4),hr=p[6]|((p[7]&1)<<4),rc=(p[7]>>1)&3;
+    const pieces=[...midiPiecesRef.current];
+    setMidiPiecesDisplay(pieces);
+    if(pieces.every(p=>p!==null)){
+      const fr=pieces[0]|(pieces[1]<<4),sc=pieces[2]|(pieces[3]<<4),mn=pieces[4]|(pieces[5]<<4),hr=pieces[6]|((pieces[7]&1)<<4),rc=(pieces[7]>>1)&3;
       // rc: 0=24fps, 1=25fps, 2=29.97df, 3=30fps
       const totalF=rc===2
-        ?108000*hr+1800*mn-2*(mn-Math.floor(mn/10))+30*sc+fr   // drop-frame formula
+        ?108000*hr+1800*mn-2*(mn-Math.floor(mn/10))+30*sc+fr
         :((hr*60+mn)*60+sc)*(rc===0?24:rc===1?25:30)+fr;
       setMidiTC(totalF);
       setMidiStatus("receiving");
@@ -423,23 +437,46 @@ function App(){
     try{
       const access=await navigator.requestMIDIAccess({sysex:false});
       midiAccessRef.current=access;
-      const refresh=()=>{const ps=[];for(const[id,p] of access.inputs)ps.push({id,name:p.name});setMidiPorts(ps)};
-      refresh();access.onstatechange=refresh;
+      const attachAll=()=>{
+        const ps=[];
+        for(const[id,p] of access.inputs){
+          ps.push({id,name:p.name});
+          // Attach to all ports immediately so debug log shows messages without port selection
+          if(!p.onmidimessage){p.onmidimessage=handleRawMidi;console.log("[DCC MIDI] Attached to:",p.name,id)}
+        }
+        setMidiPorts(ps);
+        console.log("[DCC MIDI] Ports:",ps.map(p=>p.name));
+      };
+      attachAll();
+      access.onstatechange=e=>{
+        console.log("[DCC MIDI] State change:",e.port?.name,e.port?.state);
+        // Re-attach if new port connected
+        if(e.port&&e.port.type==="input"&&!e.port.onmidimessage)e.port.onmidimessage=handleRawMidi;
+        const ps=[];for(const[id,p] of access.inputs)ps.push({id,name:p.name});setMidiPorts(ps);
+      };
       setMidiStatus("connected");setShowMidiPanel(true);
     }catch(err){setError("MIDI: "+err.message)}
-  },[]);
+  },[handleRawMidi]);
   const selectMidiPort=useCallback(portId=>{
     const access=midiAccessRef.current;if(!access)return;
+    // Detach all, then re-attach to selected (or all if portId is falsy)
     for(const[,p] of access.inputs)p.onmidimessage=null;
     setMidiPortId(portId);
-    if(portId){const p=access.inputs.get(portId);if(p)p.onmidimessage=handleMtcMsg}
-  },[handleMtcMsg]);
+    if(portId){
+      const p=access.inputs.get(portId);
+      if(p){p.onmidimessage=handleRawMidi;console.log("[DCC MIDI] Selected port:",p.name,portId)}
+    }else{
+      for(const[id,p] of access.inputs){p.onmidimessage=handleRawMidi;console.log("[DCC MIDI] Listening all ports")}
+    }
+  },[handleRawMidi]);
   const disconnectMidi=useCallback(()=>{
     const access=midiAccessRef.current;
     if(access)for(const[,p] of access.inputs)p.onmidimessage=null;
     clearTimeout(midiRxTimerRef.current);
+    midiPiecesRef.current=new Array(8).fill(null);
     setMidiStatus("disconnected");setMidiPorts([]);setMidiPortId(null);
     setMidiTC(null);setMidiHiRow(null);setShowMidiPanel(false);
+    setMidiLog([]);setMidiPiecesDisplay(new Array(8).fill(null));setShowMidiDebug(false);
   },[]);
 
   const SKIP=["WALLA","MAIN TITLE","GRAPHICS INSERTS","GRAPHICS","AD","FOREST BLAKK","JOY WILLIAMS","PRINCIPAL PHOTOGRAPHY"];
@@ -724,18 +761,62 @@ function App(){
               {midiStatus==="disconnected"?"○":midiStatus==="connected"?"◌":"●"} MIDI
             </button>
             {showMidiPanel&&midiStatus!=="disconnected"&&(
-              <div style={{position:"absolute",top:"calc(100% + 6px)",right:0,background:"#141414",border:"1px solid #2a2a2a",borderRadius:8,padding:"12px 14px",minWidth:240,zIndex:300,boxShadow:"0 8px 24px rgba(0,0,0,0.7)"}}>
-                <div style={{fontSize:10,color:"#555",fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:8}}>Puerto MTC</div>
+              <div style={{position:"absolute",top:"calc(100% + 6px)",right:0,background:"#141414",border:"1px solid #2a2a2a",borderRadius:8,padding:"12px 14px",minWidth:300,zIndex:300,boxShadow:"0 8px 24px rgba(0,0,0,0.7)"}}>
+                {/* Port selector */}
+                <div style={{fontSize:10,color:"#555",fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.08em",marginBottom:6}}>Puerto MTC</div>
                 <select value={midiPortId||""} onChange={e=>selectMidiPort(e.target.value||null)}
                   style={{width:"100%",background:"#1a1a1a",color:"#ccc",border:"1px solid #333",borderRadius:4,padding:"5px 6px",fontSize:11,fontFamily:mono}}>
-                  <option value="">— Sin puerto —</option>
+                  <option value="">— Todos los puertos —</option>
                   {midiPorts.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
+                {midiPorts.length===0&&<div style={{marginTop:6,fontSize:10,color:"#c06020",fontFamily:mono}}>⚠ No se detectaron puertos MIDI</div>}
+                {/* Current TC */}
                 {midiTC!=null&&(()=>{
                   const fps=ptMeta?.fps||24,h=Math.floor(midiTC/(3600*fps)),r0=midiTC%(3600*fps),m=Math.floor(r0/(60*fps)),r1=r0%(60*fps),s=Math.floor(r1/fps),f=r1%fps;
                   return<div style={{marginTop:8,fontFamily:mono,fontSize:12,color:"#4a9eff",letterSpacing:"0.04em"}}>MTC {[h,m,s,f].map(n=>String(n).padStart(2,"0")).join(":")}</div>;
                 })()}
-                <button onClick={disconnectMidi} style={{marginTop:10,width:"100%",padding:"4px",borderRadius:4,border:"1px solid #2a2a2a",background:"transparent",color:"#555",fontSize:10,fontFamily:mono,cursor:"pointer"}}>Desconectar</button>
+                {/* Debug toggle */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10}}>
+                  <button onClick={()=>setShowMidiDebug(v=>!v)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #333",background:showMidiDebug?"#1a1a2a":"transparent",color:showMidiDebug?"#4a9eff":"#444",fontSize:10,fontFamily:mono,cursor:"pointer",letterSpacing:"0.05em"}}>
+                    {showMidiDebug?"▾ DEBUG":"▸ DEBUG"}
+                  </button>
+                  <button onClick={disconnectMidi} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #2a2a2a",background:"transparent",color:"#555",fontSize:10,fontFamily:mono,cursor:"pointer"}}>Desconectar</button>
+                </div>
+                {/* Debug panel */}
+                {showMidiDebug&&(
+                  <div style={{marginTop:10,borderTop:"1px solid #222",paddingTop:10}}>
+                    {/* Ports */}
+                    <div style={{fontSize:9,color:"#555",fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:4}}>Puertos detectados ({midiPorts.length})</div>
+                    {midiPorts.length===0
+                      ?<div style={{fontSize:10,color:"#c06020",fontFamily:mono}}>Ninguno</div>
+                      :midiPorts.map(p=><div key={p.id} style={{fontSize:10,fontFamily:mono,color:"#aaa",marginBottom:2}}>• {p.name} <span style={{color:"#444"}}>[{p.id.slice(0,12)}]</span> {midiPortId===p.id?" ← activo":!midiPortId?" ← (todos)":""}
+                      </div>)}
+                    {/* TC pieces */}
+                    <div style={{fontSize:9,color:"#555",fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.07em",marginTop:8,marginBottom:4}}>Reconstrucción TC (8 piezas QF)</div>
+                    <div style={{display:"flex",gap:3,flexWrap:"wrap"}}>
+                      {midiPiecesDisplay.map((v,i)=>(
+                        <div key={i} style={{width:28,textAlign:"center",fontSize:9,fontFamily:mono,borderRadius:3,padding:"2px 0",background:v!=null?"#0f1f0f":"#1a1a1a",color:v!=null?"#50c878":"#333",border:"1px solid",borderColor:v!=null?"#1a3a1a":"#222"}}>
+                          {i}<br/>{v!=null?v.toString(16).toUpperCase():"·"}
+                        </div>
+                      ))}
+                    </div>
+                    {/* Raw log */}
+                    <div style={{fontSize:9,color:"#555",fontFamily:mono,textTransform:"uppercase",letterSpacing:"0.07em",marginTop:8,marginBottom:4}}>
+                      Mensajes recibidos {midiLog.length>0&&<span style={{color:midiLog.some(m=>m.isQF)?"#50c878":"#c06020"}}>{midiLog.some(m=>m.isQF)?"✓ 0xF1 detectado":"✗ sin 0xF1"}</span>}
+                    </div>
+                    {midiLog.length===0
+                      ?<div style={{fontSize:10,color:"#444",fontFamily:mono}}>Sin mensajes aún. ¿Pro Tools reproduce?</div>
+                      :<div style={{maxHeight:160,overflowY:"auto"}}>
+                        {midiLog.map((m,i)=>(
+                          <div key={i} style={{fontSize:9,fontFamily:mono,color:m.isQF?"#50c878":m.status===0xF8?"#2a4a2a":"#555",marginBottom:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                            <span style={{color:"#333",marginRight:4}}>{m.ts}</span>
+                            <span style={{color:m.isQF?"#50c878":"#666",marginRight:4}}>{m.typeName}</span>
+                            <span style={{color:"#444"}}>{m.hex}</span>
+                          </div>
+                        ))}
+                      </div>}
+                  </div>
+                )}
               </div>
             )}
           </div>
